@@ -1,0 +1,10 @@
+# GSE Downloader 示例 GSE 列表
+# 每行一个 GSE ID，# 开头的行为注释
+
+# RNA-seq 数据集
+GSE134520
+GSE123456
+
+# Microarray 数据集
+GSE1
+GSE2
