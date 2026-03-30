@@ -15,7 +15,7 @@ metadata:
     requires:
       tools: ['python', 'pip']
     install: |
-      pip install -e . --quiet
+      pip install "git+https://github.com/3H-Gene/gse-downloader.git" --quiet
     entry: gse-downloader
   security:
     credentials_usage: |
@@ -181,18 +181,28 @@ print(result.expression_matrix, result.metadata_file)
 
 ## 安装
 
-### 方式一：使用 Conda（推荐）
+### 方式一：从 GitHub 直接安装（推荐，普通用户）
 
 ```bash
-mamba env create -f environment.yml
-conda activate gse_downloader
-pip install -e .
+pip install "git+https://github.com/3H-Gene/gse-downloader.git"
 ```
 
-### 方式二：直接安装
+### 方式二：使用 Conda / Mamba（HPC / 生产环境）
 
 ```bash
-pip install -e .
+git clone https://github.com/3H-Gene/gse-downloader.git
+cd gse-downloader
+mamba env create -f environment.yml
+conda activate gse_downloader
+pip install .
+```
+
+### 方式三：开发者模式
+
+```bash
+git clone https://github.com/3H-Gene/gse-downloader.git
+cd gse-downloader
+pip install -e ".[dev]"
 ```
 
 ## 依赖

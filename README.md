@@ -14,21 +14,57 @@
 
 ### WorkBuddy
 
-1. 进入 [Releases 页面](https://github.com/3H-Gene/gse-downloader/releases/latest)，下载 `gse-downloader-skill.zip`
-2. WorkBuddy → 左侧「技能」→「从文件安装」→ 选择 zip 文件
-3. 对话中直接说："帮我下载 GSE134520 的数据" 即可
+1. 先安装 Python 工具本体（见下方 🚀 安装章节）
+2. 进入 [Releases 页面](https://github.com/3H-Gene/gse-downloader/releases/latest)，下载 `gse-downloader-skill.zip`
+3. WorkBuddy → 左侧「技能」→「从文件安装」→ 选择 zip 文件
+4. 对话中直接说："帮我下载 GSE134520 的数据" 即可
 
 ### OpenClaw
 
-在 OpenClaw 项目中，对话里说：
+同样先安装 Python 工具本体，之后在 OpenClaw 中加载 Skill：
 
+```bash
+pip install "git+https://github.com/3H-Gene/gse-downloader.git"
+```
+
+然后在 OpenClaw 对话里说：
 > "用 gse-downloader 帮我搜索 lung cancer RNA-seq 数据集"
-
-OpenClaw 会自动调用 SKILL.md 中定义的工具指令。
 
 ---
 
-## ✨ 特性
+## 🚀 安装
+
+### 方式一：从 GitHub 直接安装（推荐，普通用户）
+
+```bash
+pip install "git+https://github.com/3H-Gene/gse-downloader.git"
+```
+
+安装后即可使用 `gse-downloader` 命令。
+
+### 方式二：使用 Conda / Mamba（推荐用于 HPC / 生产环境）
+
+```bash
+git clone https://github.com/3H-Gene/gse-downloader.git
+cd gse-downloader
+mamba env create -f environment.yml
+conda activate gse_downloader
+pip install .
+```
+
+### 方式三：开发者模式（参与贡献）
+
+```bash
+git clone https://github.com/3H-Gene/gse-downloader.git
+cd gse-downloader
+pip install -e ".[dev]"
+```
+
+### 验证安装
+
+```bash
+gse-downloader --version
+```
 
 | 特性 | 说明 |
 |------|------|
