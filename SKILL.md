@@ -1,8 +1,31 @@
 ---
 name: gse-downloader
-description: "Enterprise-grade GEO data batch downloader for bioinformatics. Supports keyword search, resume download, checksum verification, omics-type detection, and statistics."
-description_zh: "企业级 GEO 数据批量下载工具，支持关键词搜索、断点续传、完整性校验、组学类型识别和多维度统计"
-description_en: "Enterprise-grade GEO data batch downloader with resume, checksum, omics detection and statistics"
+version: 1.0.0
+description: |
+  企业级 GEO 数据批量下载工具，专为生物信息学研究人员设计。
+  支持 NCBI GEO 关键词搜索、断点续传下载、MD5/SHA256 完整性校验、数据档案管理、
+  组学类型自动识别（RNA-seq/scRNA-seq/ATAC-seq/ChIP-seq/Microarray 等）和多维度统计。
+  当用户提到 GEO 数据下载、GSE 数据集、NCBI GEO、生物信息学数据获取时，使用此 skill。
+description_zh: "GEO 数据批量下载（搜索、断点续传、校验、档案管理、组学类型识别）"
+description_en: "GEO data batch downloader (search, resume, checksum, archive, omics detection)"
+homepage: https://github.com/3H-Gene/gse-downloader
+metadata:
+  openclaw:
+    emoji: '🧬'
+    requires:
+      tools: ['python', 'pip']
+    install: |
+      pip install -e . --quiet
+    entry: gse-downloader
+  security:
+    credentials_usage: |
+      This skill uses NCBI E-utilities API (https://eutils.ncbi.nlm.nih.gov).
+      An optional NCBI API key can be configured in config.toml to increase rate limits.
+      No credentials are stored or transmitted to any third party.
+    allowed_domains:
+      - eutils.ncbi.nlm.nih.gov
+      - ftp.ncbi.nlm.nih.gov
+      - www.ncbi.nlm.nih.gov
 ---
 
 # GSE Downloader Skill
