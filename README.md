@@ -4,6 +4,27 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![WorkBuddy Skill](https://img.shields.io/badge/WorkBuddy-Skill-brightgreen.svg)](https://github.com/3H-Gene/gse-downloader/releases/latest)
+
+---
+
+## 🤖 WorkBuddy / OpenClaw Skill 安装
+
+> **不想手动敲命令？直接把这个工具作为 AI Skill 加载，让 AI 帮你下数据。**
+
+### WorkBuddy
+
+1. 进入 [Releases 页面](https://github.com/3H-Gene/gse-downloader/releases/latest)，下载 `gse-downloader-skill.zip`
+2. WorkBuddy → 左侧「技能」→「从文件安装」→ 选择 zip 文件
+3. 对话中直接说："帮我下载 GSE134520 的数据" 即可
+
+### OpenClaw
+
+在 OpenClaw 项目中，对话里说：
+
+> "用 gse-downloader 帮我搜索 lung cancer RNA-seq 数据集"
+
+OpenClaw 会自动调用 SKILL.md 中定义的工具指令。
 
 ---
 
