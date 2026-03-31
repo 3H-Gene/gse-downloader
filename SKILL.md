@@ -1,13 +1,15 @@
 ---
 name: gse-downloader
-version: 1.0.2
+version: 1.1.0
 description: |
-  企业级 GEO 数据批量下载工具，专为生物信息学研究人员设计。
-  支持 NCBI GEO 关键词搜索、断点续传下载、MD5/SHA256 完整性校验、数据档案管理、
+  企业级 GEO 数据批量下载与数据画像工具，专为生物信息学研究人员设计。
+  支持标准化 JSON 输入（兼容 geo-search-skill 输出）、多路径智能下载策略、
+  断点续传、MD5/SHA256 完整性校验、数据结构化 Profiling（基础统计）、
+  全流程 Pipeline（download→verify→profile）、metadata 本地缓存、
   组学类型自动识别（RNA-seq/scRNA-seq/ATAC-seq/ChIP-seq/Microarray 等）和多维度统计。
   当用户提到 GEO 数据下载、GSE 数据集、NCBI GEO、生物信息学数据获取时，使用此 skill。
-description_zh: "GEO 数据批量下载（搜索、断点续传、校验、档案管理、组学类型识别）"
-description_en: "GEO data batch downloader (search, resume, checksum, archive, omics detection)"
+description_zh: "GEO 数据获取与数据画像（搜索、断点续传、校验、档案、Profiling、Pipeline）"
+description_en: "GEO data acquisition & profiling (search, resume, checksum, archive, profiling, pipeline)"
 homepage: https://github.com/3H-Gene/gse-downloader
 metadata:
   openclaw:
@@ -32,7 +34,14 @@ metadata:
 
 ## 简介
 
-GSE Downloader 是一个企业级 GEO 数据批量下载工具，专为生物信息学研究人员设计。支持关键词搜索、断点续传、数据完整性校验、数据档案管理和多维度统计。
+GSE Downloader 是一个企业级 GEO 数据获取（Data Acquisition）与数据画像（Data Profiling）工具。
+
+**v1.1.0 新特性：**
+- 🔗 **标准化 JSON 输入**：兼容 `geo-search-skill` 输出，直接管道传入
+- 🛣️ **多路径下载策略**：SOFT → Series Matrix → Supplementary，SRA 仅按需显式启用
+- 📊 **Profiling 模块**：结构标准化 + 基础统计（sample_count/gene_count/missing_rate/sparsity）
+- ⚡ **Pipeline 一键执行**：`download → verify → profile` 链式运行
+- 💾 **Metadata 缓存**：本地 JSON 缓存，TTL 72h，避免重复 API 调用
 
 ## 功能
 
@@ -40,10 +49,11 @@ GSE Downloader 是一个企业级 GEO 数据批量下载工具，专为生物信
 - 📋 **元数据查询**: 快速查看任意 GSE 的详细信息（本地或在线）
 - 🔄 **断点续传**: 网络中断后自动恢复下载，支持 `--force` 强制重下
 - ✅ **完整性校验**: MD5/SHA256 校验确保数据准确
-- 📊 **数据档案**: 完整的 GSE 数据档案，含元数据、样本信息
+- 📊 **Profiling**: 2-D 矩阵结构化 + 基础统计（不修改表达量值）
+- ⚡ **Pipeline**: download→verify→profile 全流程一键
+- 📋 **数据档案**: 完整的 GSE 数据档案，含元数据、样本信息
 - 📈 **多维度统计**: 按物种、组学类型等维度统计分析
 - 🧬 **组学识别**: 自动识别 RNA-seq、Microarray、ATAC-seq 等
-- 📦 **Conda 环境**: 开箱即用的 Conda 环境配置
 - ⚙️ **配置向导**: 一键生成 config.toml
 
 ## 使用方法
@@ -93,6 +103,19 @@ gse-downloader batch gse_list.txt --retry 3 --report report.json
 gse-downloader verify GSE123456
 gse-downloader verify --all
 
+# ── 数据 Profiling（v1.1.0+）──
+gse-downloader profile GSE123456          # 结构统计
+gse-downloader profile GSE123456 --json   # JSON 输出
+
+# ── 全流程 Pipeline（v1.1.0+）──
+gse-downloader pipeline GSE123456                         # 单个数据集
+gse-downloader pipeline '{"gse_id":"GSE123456","omics_type":"RNA-seq"}'  # JSON 输入
+gse-downloader pipeline gse_list.json                     # 批量 JSON 文件
+gse-downloader pipeline GSE123456 --force                 # 强制重下
+gse-downloader pipeline GSE123456 --sra                   # 显示 SRA 运行号
+gse-downloader pipeline GSE123456 --no-profile            # 仅下载+校验
+gse-downloader pipeline GSE123456 --json                  # JSON 格式输出
+
 # ── 版本 ──
 gse-downloader --version
 ```
@@ -106,6 +129,12 @@ from gse_downloader import (
     ArchiveProfile,
     FormatterFactory,
     OmicsType,
+    # v1.1.0 新增
+    Pipeline,
+    DataProfiler,
+    MetadataCache,
+    parse_input,
+    GseInput,
 )
 
 # ── 搜索 GEO ──
@@ -120,6 +149,37 @@ print(series.title, series.series_type, series.organism)
 
 # ── 验证 GSE ID 格式和存在性 ──
 ok, err = geo.validate_gse_id("GSE134520")
+
+# ── 多路径下载文件列表（v1.1.0）──
+files = geo.get_series_files_by_strategy("GSE134520", omics_hint="RNA-seq")
+sra_files = geo.get_series_files_by_strategy("GSE134520", include_sra=True)
+
+# ── 标准化输入解析（v1.1.0）──
+# 支持字符串、JSON、列表、文件路径
+inputs = parse_input("GSE134520")
+inputs = parse_input({"gse_id": "GSE134520", "omics_type": "RNA-seq"})
+inputs = parse_input(["GSE1", "GSE2", "GSE3"])
+inputs = parse_input("gse_list.json")  # Path 对象或字符串路径
+
+# ── 全流程 Pipeline（v1.1.0）──
+result = Pipeline().run("GSE134520")
+print(result.summary)
+# 支持 JSON 输入（兼容 geo-search-skill）
+result = Pipeline().run({"gse_id": "GSE134520", "omics_type": "RNA-seq", "sample_count": 10})
+# 批量
+results = Pipeline().run_batch(["GSE1", "GSE2", "GSE3"])
+
+# ── 数据 Profiling（v1.1.0）──
+from pathlib import Path
+pr = DataProfiler().profile(Path("./gse_data/GSE134520"))
+print(f"Genes: {pr.stats.gene_count}, Samples: {pr.stats.sample_count}")
+print(f"Missing: {pr.stats.missing_rate:.4f}, Sparsity: {pr.stats.sparsity:.4f}")
+
+# ── Metadata 缓存（v1.1.0）──
+cache = MetadataCache(ttl_hours=72)
+cached = cache.get("GSE134520")   # None if not cached
+cache.set("GSE134520", series.__dict__)
+cache.stats()  # {"total": 1, "stale": 0, "fresh": 1}
 
 # ── 下载 ──
 with GSEDownloader(output_dir="./data", rate_limit=2.0) as dl:

@@ -1004,5 +1004,192 @@ level = "INFO"
     console.print(f"  [cyan]gse-downloader batch gse_list.txt --config {config_path}[/cyan]")
 
 
+@app.command()
+def profile(
+    gse_id: str = typer.Argument(..., help="GSE identifier (e.g., GSE123456)"),
+    output_dir: Optional[Path] = typer.Option(None, "--output", "-o", help="Base output directory"),
+    config: Optional[Path] = typer.Option(None, "--config", "-c", help="Config file path"),
+    max_rows: int = typer.Option(200_000, "--max-rows", help="Max rows safety limit (0=unlimited)"),
+    json_out: bool = typer.Option(False, "--json", help="Output profiling result as JSON"),
+):
+    """Profile a downloaded GSE dataset.
+
+    Reads downloaded files, builds a 2-D expression matrix, and computes
+    structural statistics (sample_count, gene_count, missing_rate, sparsity).
+
+    No expression value transformation is performed.
+    """
+    from gse_downloader.profiling.profiler import DataProfiler
+
+    gse_id = gse_id.upper().strip()
+
+    # Resolve data directory
+    if config and config.exists():
+        cfg = load_config(config)
+        base_dir = cfg.download.output_dir
+    else:
+        base_dir = output_dir or Path("./gse_data")
+
+    gse_dir = base_dir / gse_id if base_dir else Path(f"./gse_data/{gse_id}")
+
+    if not gse_dir.exists():
+        console.print(f"[red]Directory not found: {gse_dir}[/red]")
+        console.print(f"[yellow]Download the dataset first:[/yellow] gse-downloader download {gse_id}")
+        raise typer.Exit(1)
+
+    console.print(f"[bold cyan]Profiling[/bold cyan] {gse_id} @ {gse_dir}")
+
+    profiler = DataProfiler(max_rows=max_rows)
+    result = profiler.profile(gse_dir)
+
+    if json_out:
+        import json as _json
+        console.print(_json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
+        return
+
+    # Pretty table
+    table = Table(title=f"Profiling Summary: {gse_id}")
+    table.add_column("Metric", style="cyan", no_wrap=True)
+    table.add_column("Value", justify="right")
+
+    table.add_row("Omics type", result.omics_type or "—")
+    table.add_row("Sample count", str(result.stats.sample_count))
+    table.add_row("Gene/feature count", str(result.stats.gene_count))
+    table.add_row("Total cells", str(result.stats.total_cells))
+    table.add_row("Missing rate", f"{result.stats.missing_rate:.4f}")
+    table.add_row("Zero rate", f"{result.stats.zero_rate:.4f}")
+    table.add_row("Sparsity", f"{result.stats.sparsity:.4f}")
+    table.add_row("Value type", result.stats.value_type)
+    if result.stats.duplicate_genes_removed:
+        table.add_row("Duplicates removed", str(result.stats.duplicate_genes_removed))
+    if result.stats.empty_genes_removed:
+        table.add_row("Empty genes removed", str(result.stats.empty_genes_removed))
+
+    console.print(table)
+
+    if result.matrix_file:
+        console.print(f"\n[green]expression_matrix.csv[/green] → {result.matrix_file}")
+    if result.metadata_file:
+        console.print(f"[green]metadata.csv[/green]          → {result.metadata_file}")
+    if result.summary_file:
+        console.print(f"[green]profiling_summary.json[/green] → {result.summary_file}")
+
+    if result.warnings:
+        console.print(f"\n[yellow]Warnings ({len(result.warnings)}):[/yellow]")
+        for w in result.warnings:
+            console.print(f"  [yellow]![/yellow] {w}")
+
+    if not result.success:
+        console.print(f"\n[red]Errors:[/red] {result.errors}")
+        raise typer.Exit(1)
+
+
+@app.command()
+def pipeline(
+    input_arg: str = typer.Argument(
+        ...,
+        help=(
+            "GSE ID, JSON string, or path to a JSON/text file. "
+            "Accepts geo-search-skill structured output."
+        ),
+    ),
+    config: Optional[Path] = typer.Option(None, "--config", "-c", help="Config file path"),
+    output_dir: Optional[Path] = typer.Option(None, "--output", "-o", help="Base output directory"),
+    force: bool = typer.Option(False, "--force", help="Force re-download"),
+    no_profile: bool = typer.Option(False, "--no-profile", help="Skip profiling step"),
+    include_sra: bool = typer.Option(
+        False, "--sra", help="Opt-in: also list SRA run accessions (no auto-download)"
+    ),
+    json_out: bool = typer.Option(False, "--json", help="Output results as JSON"),
+):
+    """Run the full pipeline: download → verify → profile.
+
+    Accepts flexible input formats:
+
+    \\b
+      Single GSE ID:
+        gse-downloader pipeline GSE12345
+
+    \\b
+      JSON from geo-search-skill:
+        gse-downloader pipeline '{"gse_id":"GSE12345","omics_type":"RNA-seq"}'
+
+    \\b
+      File with multiple GSE IDs:
+        gse-downloader pipeline gse_list.json
+
+    The pipeline automatically detects download status and resumes if needed.
+    """
+    import json as _json
+    from gse_downloader.pipeline.pipeline import Pipeline
+
+    # Resolve input (file path or inline string)
+    raw: object
+    input_path = Path(input_arg)
+    if input_path.exists():
+        raw = input_path
+    else:
+        raw = input_arg
+
+    # Build pipeline
+    cfg = load_config(config) if (config and config.exists()) else Config()
+    if output_dir:
+        cfg.download.output_dir = output_dir
+
+    pl = Pipeline(
+        config_path=config,
+        output_dir=cfg.download.output_dir,
+        run_profiling=not no_profile,
+    )
+
+    # Parse input to determine batch vs. single
+    from gse_downloader.core.input_schema import parse_input
+    try:
+        inputs = parse_input(raw)  # type: ignore[arg-type]
+    except Exception as exc:
+        console.print(f"[red]Failed to parse input: {exc}[/red]")
+        raise typer.Exit(1)
+
+    if include_sra:
+        for inp in inputs:
+            inp.options.include_sra = True
+
+    console.print(
+        f"[bold cyan]Pipeline[/bold cyan] — {len(inputs)} dataset(s)"
+        + (" [force]" if force else "")
+    )
+
+    all_results = []
+    for inp in inputs:
+        console.print(f"\n[cyan]━━━ {inp.gse_id} ━━━[/cyan]")
+        result = pl.run(inp, force=force)
+        all_results.append(result)
+
+        if json_out:
+            continue
+
+        # Step summary
+        for step in result.steps:
+            icon = "[green]OK[/green]" if step.success else ("[dim]--[/dim]" if step.skipped else "[red]FAIL[/red]")
+            console.print(f"  {icon}  {step.step:10s} {step.message}")
+
+        if result.profiling and result.profiling.stats.sample_count:
+            p = result.profiling.stats
+            console.print(
+                f"  [dim]Profile:[/dim] {p.gene_count} genes × {p.sample_count} samples, "
+                f"sparsity={p.sparsity:.4f}"
+            )
+
+    if json_out:
+        console.print(_json.dumps([r.to_dict() for r in all_results], indent=2, ensure_ascii=False))
+        return
+
+    # Final summary
+    n_ok = sum(1 for r in all_results if r.success)
+    console.print(f"\n[bold]Done:[/bold] {n_ok}/{len(all_results)} pipelines succeeded")
+    if n_ok < len(all_results):
+        raise typer.Exit(1)
+
+
 if __name__ == "__main__":
     app()

@@ -16,15 +16,26 @@ Quick-start example::
     # Load local archive
     profile = ArchiveProfile.from_json("./data/GSE134520/archive.json")
     print(profile.schema.sample_count)
+
+    # Run full pipeline: download → verify → profile
+    from gse_downloader import Pipeline
+    result = Pipeline().run("GSE134520")
+    print(result.summary)
+
+    # Profile an existing dataset
+    from gse_downloader import DataProfiler
+    pr = DataProfiler().profile("./data/GSE134520")
+    print(pr.stats.sparsity)
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 __author__ = "Your Name"
 __email__ = "your.email@example.com"
 
 # Core download engine
 from gse_downloader.core.downloader import GSEDownloader, DownloadResult
 from gse_downloader.core.state_manager import DownloadState, StateManager
+from gse_downloader.core.input_schema import GseInput, DownloadOptions, parse_input
 
 # GEO query / metadata
 from gse_downloader.parser.geo_query import GEOQuery, GSESeries, GEOFile
@@ -38,6 +49,15 @@ from gse_downloader.archive.schema import ArchiveSchema, DownloadStatus
 # Formatter
 from gse_downloader.formatter.factory import FormatterFactory
 
+# Profiling
+from gse_downloader.profiling.profiler import DataProfiler, ProfilingResult
+
+# Pipeline
+from gse_downloader.pipeline.pipeline import Pipeline, PipelineResult
+
+# Cache
+from gse_downloader.cache.metadata_cache import MetadataCache, get_metadata_cache
+
 # Config
 from gse_downloader.utils.config import Config, load_config
 
@@ -50,6 +70,10 @@ __all__ = [
     # state
     "DownloadState",
     "StateManager",
+    # input schema
+    "GseInput",
+    "DownloadOptions",
+    "parse_input",
     # geo query
     "GEOQuery",
     "GSESeries",
@@ -68,7 +92,17 @@ __all__ = [
     "DownloadStatus",
     # formatter
     "FormatterFactory",
+    # profiling
+    "DataProfiler",
+    "ProfilingResult",
+    # pipeline
+    "Pipeline",
+    "PipelineResult",
+    # cache
+    "MetadataCache",
+    "get_metadata_cache",
     # config
     "Config",
     "load_config",
 ]
+

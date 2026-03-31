@@ -410,81 +410,250 @@ class GEOQuery:
             logger.error(f"Failed to fetch sample info for {gsm_id}: {e}")
             return {"gsm_id": gsm_id}
 
-    def get_series_files(self, gse_id: str) -> list[dict]:
+    # ── FTP helper ────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _ftp_prefix(gse_id: str) -> str:
+        """Return the FTP prefix folder for a GSE ID.
+
+        Examples:
+            GSE1      -> GSEnnn
+            GSE1234   -> GSE1nnn
+            GSE123456 -> GSE123nnn
+        """
+        num_part = gse_id[3:]
+        if len(num_part) <= 3:
+            return "GSEnnn"
+        return f"GSE{num_part[:-3]}nnn"
+
+    def get_series_files(
+        self,
+        gse_id: str,
+        file_types: Optional[list[str]] = None,
+    ) -> list[dict]:
         """Get available download files for a GSE.
 
         Args:
             gse_id: GSE identifier
+            file_types: Subset of ["soft", "matrix", "miniml", "supplementary"].
+                        If None, all four types are returned.
 
         Returns:
             List of file info dictionaries
         """
         gse_id = gse_id.upper().strip()
+        _all = file_types is None
+        _want = set(file_types) if file_types else set()
 
         files = []
 
-        # Determine the series FTP prefix folder, e.g.:
-        #   GSE1       -> GSEnnn
-        #   GSE1234    -> GSE1nnn
-        #   GSE123456  -> GSE123nnn
-        num_part = gse_id[3:]          # digits after "GSE"
-        if len(num_part) <= 3:
-            prefix = "GSEnnn"
-        else:
-            prefix = f"GSE{num_part[:-3]}nnn"
-
-        # HTTPS mirror of the NCBI GEO FTP tree
         FTP_HTTPS = "https://ftp.ncbi.nlm.nih.gov/geo/series"
-        base_ftp = f"{FTP_HTTPS}/{prefix}/{gse_id}"
+        base_ftp = f"{FTP_HTTPS}/{self._ftp_prefix(gse_id)}/{gse_id}"
 
-        # 1. SOFT family file (compressed on FTP, no local gzip needed)
+        # 1. SOFT family file
+        if _all or "soft" in _want:
+            files.append({
+                "filename": f"{gse_id}_family.soft.gz",
+                "type": "soft",
+                "description": "SOFT family file (gzip compressed)",
+                "url": f"{base_ftp}/soft/{gse_id}_family.soft.gz",
+            })
+
+        # 2. Series matrix
+        if _all or "matrix" in _want or "series_matrix" in _want:
+            files.append({
+                "filename": f"{gse_id}_series_matrix.txt.gz",
+                "type": "series_matrix",
+                "description": "Series Matrix file (gzip-compressed text)",
+                "url": f"{base_ftp}/matrix/{gse_id}_series_matrix.txt.gz",
+            })
+
+        # 3. MINiML tgz archive
+        if _all or "miniml" in _want:
+            files.append({
+                "filename": f"{gse_id}_family.xml.tgz",
+                "type": "miniml",
+                "description": "MINiML format (tgz archive)",
+                "url": f"{base_ftp}/miniml/{gse_id}_family.xml.tgz",
+                "is_archive": True,
+            })
+
+        # 4. Supplementary files – query the GEO FTP listing page
+        if _all or "supplementary" in _want or "suppl" in _want:
+            try:
+                suppl_url = f"{base_ftp}/suppl/"
+                response = self.session.get(suppl_url, timeout=30)
+
+                if response.status_code == 200:
+                    content = response.text
+                    matches = re.findall(r'href="([^/"]+\.[^"]+)"', content)
+                    for fname in matches:
+                        if fname.startswith("?") or fname in ("../", "/"):
+                            continue
+                        files.append({
+                            "filename": fname,
+                            "type": "supplementary",
+                            "description": "Supplementary file",
+                            "url": f"{suppl_url}{fname}",
+                        })
+            except Exception as e:
+                logger.warning(f"Failed to get supplementary files for {gse_id}: {e}")
+
+        return files
+
+    def get_series_files_by_strategy(
+        self,
+        gse_id: str,
+        omics_hint: str = "",
+        include_sra: bool = False,
+    ) -> list[dict]:
+        """Multi-path download strategy: matrix → supplementary → SRA (opt-in).
+
+        Priority logic
+        --------------
+        1. Always include: SOFT family (metadata backbone)
+        2. Always include: Series Matrix (expression data for most datasets)
+        3. Always include: Supplementary files if any exist on FTP
+        4. SRA FASTQ/BAM: ONLY if ``include_sra=True`` (explicit opt-in)
+
+        The function never silently fetches SRA data — bandwidth cost is too
+        high and most downstream users only need the processed matrix.
+
+        Args:
+            gse_id: GSE identifier
+            omics_hint: Optional omics type hint (e.g. "RNA-seq", "scRNA-seq").
+                        Used to adjust supplementary file priority.
+            include_sra: If True, append SRA run accession info to the file list
+                         so the caller can decide whether to download raw reads.
+
+        Returns:
+            Ordered list of file info dicts, highest-priority first.
+        """
+        gse_id = gse_id.upper().strip()
+        files: list[dict] = []
+
+        FTP_HTTPS = "https://ftp.ncbi.nlm.nih.gov/geo/series"
+        base_ftp = f"{FTP_HTTPS}/{self._ftp_prefix(gse_id)}/{gse_id}"
+
+        # ── Layer 1: SOFT (always) ────────────────────────────────────────────
         files.append({
             "filename": f"{gse_id}_family.soft.gz",
             "type": "soft",
-            "description": "SOFT family file (gzip compressed)",
+            "priority": 1,
+            "description": "SOFT family file (metadata + sample info)",
             "url": f"{base_ftp}/soft/{gse_id}_family.soft.gz",
         })
 
-        # 2. Series matrix - it's a gzip-compressed plain-text file, not a TAR
+        # ── Layer 2: Series Matrix (always) ───────────────────────────────────
         files.append({
             "filename": f"{gse_id}_series_matrix.txt.gz",
             "type": "series_matrix",
-            "description": "Series Matrix file (gzip-compressed text)",
+            "priority": 2,
+            "description": "Series Matrix (processed expression table)",
             "url": f"{base_ftp}/matrix/{gse_id}_series_matrix.txt.gz",
         })
 
-        # 3. MINiML tgz archive
-        files.append({
-            "filename": f"{gse_id}_family.xml.tgz",
-            "type": "miniml",
-            "description": "MINiML format (tgz archive)",
-            "url": f"{base_ftp}/miniml/{gse_id}_family.xml.tgz",
-            "is_archive": True,
-        })
-
-        # 4. Supplementary files – query the GEO FTP listing page
+        # ── Layer 3: Supplementary files ─────────────────────────────────────
+        # For sequencing assays the supplementary folder often contains count
+        # matrices (*.count.gz, *_counts.txt.gz, *_matrix.mtx.gz …) which are
+        # richer than the series matrix.
         try:
             suppl_url = f"{base_ftp}/suppl/"
-            response = self.session.get(suppl_url, timeout=30)
-
-            if response.status_code == 200:
-                content = response.text
-                # NCBI HTTPS FTP index pages list files as <a href="filename">
-                matches = re.findall(r'href="([^/"]+\.[^"]+)"', content)
-                for fname in matches:
-                    # Skip parent directory links and index files
+            resp = self.session.get(suppl_url, timeout=30)
+            if resp.status_code == 200:
+                fnames = re.findall(r'href="([^/"]+\.[^"]+)"', resp.text)
+                for fname in fnames:
                     if fname.startswith("?") or fname in ("../", "/"):
                         continue
+                    # Assign slightly higher priority to count/matrix files
+                    is_count = any(
+                        kw in fname.lower()
+                        for kw in ("count", "matrix", "expr", "tpm", "fpkm", "rpkm")
+                    )
                     files.append({
                         "filename": fname,
                         "type": "supplementary",
+                        "priority": 2 if is_count else 3,
                         "description": "Supplementary file",
                         "url": f"{suppl_url}{fname}",
                     })
-        except Exception as e:
-            logger.warning(f"Failed to get supplementary files for {gse_id}: {e}")
+        except Exception as exc:
+            logger.warning(f"Failed to list supplementary files for {gse_id}: {exc}")
 
+        # ── Layer 4: SRA (explicit opt-in only) ──────────────────────────────
+        if include_sra:
+            sra_entries = self._get_sra_run_info(gse_id)
+            files.extend(sra_entries)
+
+        # Sort by priority (ascending = higher priority first), then filename
+        files.sort(key=lambda f: (f.get("priority", 9), f["filename"]))
         return files
+
+    def _get_sra_run_info(self, gse_id: str) -> list[dict]:
+        """Fetch SRA run accessions linked to a GSE.
+
+        Returns lightweight dicts with type="sra_run" and no URL — the caller
+        is responsible for constructing FASTQ/BAM download commands.
+        Does NOT download any files itself.
+        """
+        try:
+            # eSearch: find SRA UIDs linked to this GSE
+            params = {
+                "db": "sra",
+                "term": f"{gse_id}[GSEL]",
+                "retmax": 500,
+                "retmode": "json",
+                "email": self.email,
+            }
+            if self.api_key:
+                params["api_key"] = self.api_key
+            resp = self.session.get(
+                f"{self.EUTILS_BASE_URL}esearch.fcgi",
+                params=params,
+                timeout=30,
+            )
+            resp.raise_for_status()
+            sra_ids = resp.json().get("esearchresult", {}).get("idlist", [])
+            if not sra_ids:
+                return []
+
+            # eSummary: get run accessions
+            sum_params = {
+                "db": "sra",
+                "id": ",".join(sra_ids[:200]),  # cap to avoid huge requests
+                "retmode": "json",
+                "email": self.email,
+            }
+            if self.api_key:
+                sum_params["api_key"] = self.api_key
+            resp2 = self.session.get(
+                f"{self.EUTILS_BASE_URL}esummary.fcgi",
+                params=sum_params,
+                timeout=30,
+            )
+            resp2.raise_for_status()
+            result = resp2.json().get("result", {})
+
+            runs = []
+            for uid in sra_ids[:200]:
+                doc = result.get(uid, {})
+                runs_str = doc.get("runs", "")
+                # runs_str may look like "SRR123456,SRR123457"
+                for acc in re.findall(r"(SRR\d+|ERR\d+|DRR\d+)", runs_str):
+                    runs.append({
+                        "filename": f"{acc}.fastq.gz",
+                        "type": "sra_run",
+                        "priority": 5,
+                        "description": f"SRA run {acc} (opt-in, not auto-downloaded)",
+                        "sra_accession": acc,
+                        "url": None,   # caller must use fasterq-dump or prefetch
+                    })
+            logger.info(f"Found {len(runs)} SRA runs for {gse_id}")
+            return runs
+
+        except Exception as exc:
+            logger.warning(f"Failed to fetch SRA runs for {gse_id}: {exc}")
+            return []
 
     def search_series(self, term: str, retmax: int = 20) -> list[str]:
         """Search for GSE series.
