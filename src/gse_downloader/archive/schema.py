@@ -326,10 +326,47 @@ class ArchiveSchema:
         platform = Platform(**platform_data) if platform_data else None
 
         # Parse samples
-        samples = [SampleInfo(**s) for s in data.get("samples", [])]
+        samples = []
+        for s in data.get("samples", []):
+            chars_data = s.get("characteristics", {})
+            if isinstance(chars_data, dict):
+                characteristics = SampleCharacteristics(**{
+                    k: v for k, v in chars_data.items()
+                    if k in SampleCharacteristics.__dataclass_fields__
+                })
+            else:
+                characteristics = chars_data  # already SampleCharacteristics
+            samples.append(SampleInfo(
+                gsm_id=s.get("gsm_id", ""),
+                title=s.get("title", ""),
+                source_name=s.get("source_name", ""),
+                organism=s.get("organism", ""),
+                organism_taxid=s.get("organism_taxid"),
+                extraction_molecule=s.get("extraction_molecule", ""),
+                library_strategy=s.get("library_strategy", ""),
+                library_layout=s.get("library_layout", ""),
+                instrument_model=s.get("instrument_model", ""),
+                characteristics=characteristics,
+            ))
 
         # Parse files
-        files = [FileInfo(**f) for f in data.get("files", [])]
+        files = []
+        for f in data.get("files", []):
+            file_type = f.get("type", "raw")
+            if isinstance(file_type, str):
+                try:
+                    file_type = FileType(file_type)
+                except ValueError:
+                    file_type = FileType.RAW
+            files.append(FileInfo(
+                filename=f.get("filename", ""),
+                type=file_type,
+                size_bytes=f.get("size_bytes", 0),
+                md5=f.get("md5"),
+                sha256=f.get("sha256"),
+                verified=f.get("verified", False),
+                download_url=f.get("download_url"),
+            ))
 
         # Parse download info
         download_info_data = data.get("download_info", {})
