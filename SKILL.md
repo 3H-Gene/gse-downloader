@@ -1,6 +1,6 @@
 ---
 name: gse-downloader
-version: 1.0.0
+version: 1.0.2
 description: |
   企业级 GEO 数据批量下载工具，专为生物信息学研究人员设计。
   支持 NCBI GEO 关键词搜索、断点续传下载、MD5/SHA256 完整性校验、数据档案管理、
