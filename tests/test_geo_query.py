@@ -93,21 +93,77 @@ class TestValidateGSEId:
 # ── get_series_files ──────────────────────────────────────────────────────────
 
 class TestGetSeriesFiles:
+    def _matrix_html(self, gse_id: str, gpl: str = "") -> str:
+        """Return fake matrix directory HTML."""
+        if gpl:
+            fname = f"{gse_id}-{gpl}_series_matrix.txt.gz"
+        else:
+            fname = f"{gse_id}_series_matrix.txt.gz"
+        return f'<a href="{fname}">{fname}</a>'
+
     def test_basic_file_list_structure(self):
         geo = GEOQuery()
 
-        # Mock the suppl directory response
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.text = '<a href="GSE1_RAW.tar">GSE1_RAW.tar</a>'
+        # First call → matrix dir; second call → suppl dir
+        matrix_resp = MagicMock()
+        matrix_resp.status_code = 200
+        matrix_resp.text = self._matrix_html("GSE1")
 
-        with patch.object(geo.session, "get", return_value=mock_response):
+        suppl_resp = MagicMock()
+        suppl_resp.status_code = 200
+        suppl_resp.text = '<a href="GSE1_RAW.tar">GSE1_RAW.tar</a>'
+
+        with patch.object(geo.session, "get", side_effect=[matrix_resp, suppl_resp]):
             files = geo.get_series_files("GSE1")
 
         filenames = [f["filename"] for f in files]
         assert "GSE1_family.soft.gz" in filenames
         assert "GSE1_series_matrix.txt.gz" in filenames
         assert "GSE1_family.xml.tgz" in filenames
+
+    def test_multi_platform_matrix_files(self):
+        """Multi-platform GSE should return one series_matrix file per GPL."""
+        geo = GEOQuery()
+
+        matrix_resp = MagicMock()
+        matrix_resp.status_code = 200
+        matrix_resp.text = (
+            '<a href="GSE158702-GPL15520_series_matrix.txt.gz">f1</a>\n'
+            '<a href="GSE158702-GPL18573_series_matrix.txt.gz">f2</a>\n'
+            '<a href="GSE158702-GPL24676_series_matrix.txt.gz">f3</a>'
+        )
+        suppl_resp = MagicMock()
+        suppl_resp.status_code = 404
+        suppl_resp.text = ""
+
+        with patch.object(geo.session, "get", side_effect=[matrix_resp, suppl_resp]):
+            files = geo.get_series_files("GSE158702")
+
+        sm_files = [f for f in files if f["type"] == "series_matrix"]
+        assert len(sm_files) == 3
+        fnames = {f["filename"] for f in sm_files}
+        assert "GSE158702-GPL15520_series_matrix.txt.gz" in fnames
+        assert "GSE158702-GPL18573_series_matrix.txt.gz" in fnames
+        assert "GSE158702-GPL24676_series_matrix.txt.gz" in fnames
+
+    def test_matrix_dir_404_falls_back_to_default(self):
+        """If matrix dir returns 404, fall back to the default filename."""
+        geo = GEOQuery()
+
+        matrix_resp = MagicMock()
+        matrix_resp.status_code = 404
+        matrix_resp.text = ""
+
+        suppl_resp = MagicMock()
+        suppl_resp.status_code = 404
+        suppl_resp.text = ""
+
+        with patch.object(geo.session, "get", side_effect=[matrix_resp, suppl_resp]):
+            files = geo.get_series_files("GSE1")
+
+        sm_files = [f for f in files if f["type"] == "series_matrix"]
+        assert len(sm_files) == 1
+        assert sm_files[0]["filename"] == "GSE1_series_matrix.txt.gz"
 
     def test_prefix_small_gse(self):
         """GSE1 should use GSEnnn prefix."""
@@ -138,14 +194,19 @@ class TestGetSeriesFiles:
     def test_suppl_files_parsed(self):
         """Supplementary files from FTP listing should be included."""
         geo = GEOQuery()
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.text = (
+
+        matrix_resp = MagicMock()
+        matrix_resp.status_code = 200
+        matrix_resp.text = self._matrix_html("GSE1")
+
+        suppl_resp = MagicMock()
+        suppl_resp.status_code = 200
+        suppl_resp.text = (
             '<a href="GSE1_RAW.tar">GSE1_RAW.tar</a>\n'
             '<a href="GSE1_processed.txt.gz">GSE1_processed.txt.gz</a>'
         )
 
-        with patch.object(geo.session, "get", return_value=mock_response):
+        with patch.object(geo.session, "get", side_effect=[matrix_resp, suppl_resp]):
             files = geo.get_series_files("GSE1")
 
         filenames = [f["filename"] for f in files]
@@ -158,8 +219,10 @@ class TestGetSeriesFiles:
         with patch.object(geo.session, "get", side_effect=requests.exceptions.ConnectionError()):
             files = geo.get_series_files("GSE1")
 
-        # Should still have the 3 base files
+        # Should still have the 3 base files (soft + matrix fallback + miniml)
         assert len(files) >= 3
+
+
 
 
 # ── search_series_detailed ────────────────────────────────────────────────────

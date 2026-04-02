@@ -426,6 +426,56 @@ class GEOQuery:
             return "GSEnnn"
         return f"GSE{num_part[:-3]}nnn"
 
+    def _list_matrix_files(self, gse_id: str, base_ftp: str) -> list[dict]:
+        """Query the GEO FTP /matrix/ directory and return all series_matrix files.
+
+        GEO naming rules:
+          - Single-platform GSE: ``{gse_id}_series_matrix.txt.gz``
+          - Multi-platform GSE:  ``{gse_id}-{gpl_id}_series_matrix.txt.gz``
+
+        This method resolves the actual filenames by listing the directory,
+        so it works correctly for both cases.
+
+        Args:
+            gse_id: GSE identifier (already upper-cased)
+            base_ftp: FTP base URL, e.g. ``https://ftp.ncbi.nlm.nih.gov/geo/series/GSE158nnn/GSE158702``
+
+        Returns:
+            List of file dicts with keys: filename, type, description, url.
+            Falls back to the single-file guess if the directory listing fails.
+        """
+        matrix_url = f"{base_ftp}/matrix/"
+        fallback = [{
+            "filename": f"{gse_id}_series_matrix.txt.gz",
+            "type": "series_matrix",
+            "description": "Series Matrix file (gzip-compressed text)",
+            "url": f"{matrix_url}{gse_id}_series_matrix.txt.gz",
+        }]
+        try:
+            resp = self.session.get(matrix_url, timeout=30)
+            if resp.status_code != 200:
+                return fallback
+            # Match any href that looks like a series_matrix file for this GSE
+            pattern = re.compile(
+                r'href="(' + re.escape(gse_id) + r'[^"]*_series_matrix\.txt(?:\.gz)?)"',
+                re.IGNORECASE,
+            )
+            fnames = pattern.findall(resp.text)
+            if not fnames:
+                return fallback
+            return [
+                {
+                    "filename": fname,
+                    "type": "series_matrix",
+                    "description": "Series Matrix file (gzip-compressed text)",
+                    "url": f"{matrix_url}{fname}",
+                }
+                for fname in fnames
+            ]
+        except Exception as exc:
+            logger.warning(f"Failed to list matrix files for {gse_id}: {exc}")
+            return fallback
+
     def get_series_files(
         self,
         gse_id: str,
@@ -459,14 +509,10 @@ class GEOQuery:
                 "url": f"{base_ftp}/soft/{gse_id}_family.soft.gz",
             })
 
-        # 2. Series matrix
+        # 2. Series matrix – query FTP directory to get actual filename(s)
+        # (multi-platform GSEs use the pattern {gse_id}-{gpl}_series_matrix.txt.gz)
         if _all or "matrix" in _want or "series_matrix" in _want:
-            files.append({
-                "filename": f"{gse_id}_series_matrix.txt.gz",
-                "type": "series_matrix",
-                "description": "Series Matrix file (gzip-compressed text)",
-                "url": f"{base_ftp}/matrix/{gse_id}_series_matrix.txt.gz",
-            })
+            files.extend(self._list_matrix_files(gse_id, base_ftp))
 
         # 3. MINiML tgz archive
         if _all or "miniml" in _want:
@@ -544,14 +590,12 @@ class GEOQuery:
             "url": f"{base_ftp}/soft/{gse_id}_family.soft.gz",
         })
 
-        # ── Layer 2: Series Matrix (always) ───────────────────────────────────
-        files.append({
-            "filename": f"{gse_id}_series_matrix.txt.gz",
-            "type": "series_matrix",
-            "priority": 2,
-            "description": "Series Matrix (processed expression table)",
-            "url": f"{base_ftp}/matrix/{gse_id}_series_matrix.txt.gz",
-        })
+        # ── Layer 2: Series Matrix ────────────────────────────────────────────
+        # Query FTP directory to discover actual filename(s).
+        # Multi-platform GSEs use {gse_id}-{gpl}_series_matrix.txt.gz naming.
+        for sm_file in self._list_matrix_files(gse_id, base_ftp):
+            sm_file["priority"] = 2
+            files.append(sm_file)
 
         # ── Layer 3: Supplementary files ─────────────────────────────────────
         # For sequencing assays the supplementary folder often contains count
