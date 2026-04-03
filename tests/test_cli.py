@@ -258,3 +258,86 @@ class TestStatsCommand:
         result = runner.invoke(app, ["stats", "--output-dir", str(tmp_path)])
         assert result.exit_code == 0
         assert "GSE11111" in result.output or "1 datasets" in result.output or "Found 1" in result.output
+
+
+# ── format ───────────────────────────────────────────────────────────────────
+
+class TestFormatCommand:
+    def test_format_single_gse(self, tmp_path):
+        """format GSE_ID should call formatter and report result."""
+        from unittest.mock import MagicMock, patch
+        from gse_downloader.formatter.base import FormatResult
+
+        gse_dir = tmp_path / "GSE77777"
+        gse_dir.mkdir()
+
+        mock_result = FormatResult(
+            gse_id="GSE77777",
+            omics_type="Other",
+            success=True,
+            raw_dir=gse_dir / "raw",
+            processed_dir=gse_dir / "processed",
+            metadata_file=None,
+            expression_matrix=None,
+            moved_files=[],
+            errors=[],
+        )
+
+        with patch("gse_downloader.cli.commands.Config") as MockConfig, \
+             patch("gse_downloader.archive.profile.ArchiveGenerator.load", return_value=None), \
+             patch("gse_downloader.formatter.factory.FormatterFactory.get") as MockGet:
+            MockConfig.return_value.download.output_dir = tmp_path
+            mock_formatter = MagicMock()
+            mock_formatter.format.return_value = mock_result
+            MockGet.return_value = mock_formatter
+
+            result = runner.invoke(app, ["format", "GSE77777", "--output", str(tmp_path)])
+
+        assert result.exit_code == 0
+        assert "OK" in result.output or "Format" in result.output
+
+    def test_format_missing_dir(self, tmp_path):
+        """format should exit with error when GSE directory does not exist."""
+        with patch("gse_downloader.cli.commands.Config") as MockConfig:
+            MockConfig.return_value.download.output_dir = tmp_path
+            result = runner.invoke(app, ["format", "GSE00000", "--output", str(tmp_path)])
+        assert result.exit_code != 0
+        assert "not found" in result.output.lower() or "Directory" in result.output
+
+    def test_format_all(self, tmp_path):
+        """format --all should process every GSE directory found."""
+        from unittest.mock import MagicMock, patch
+        from gse_downloader.formatter.base import FormatResult
+
+        for gid in ("GSE111", "GSE222"):
+            (tmp_path / gid).mkdir()
+
+        mock_result = FormatResult(
+            gse_id="GSE111",
+            omics_type="Other",
+            success=True,
+            raw_dir=None,
+            processed_dir=None,
+            metadata_file=None,
+            expression_matrix=None,
+            moved_files=[],
+            errors=[],
+        )
+
+        with patch("gse_downloader.cli.commands.Config") as MockConfig, \
+             patch("gse_downloader.archive.profile.ArchiveGenerator.load", return_value=None), \
+             patch("gse_downloader.formatter.factory.FormatterFactory.get") as MockGet:
+            MockConfig.return_value.download.output_dir = tmp_path
+            mock_formatter = MagicMock()
+            mock_formatter.format.return_value = mock_result
+            MockGet.return_value = mock_formatter
+
+            result = runner.invoke(app, ["format", "--all", "--output", str(tmp_path)])
+
+        assert result.exit_code == 0
+        assert "2" in result.output or "GSE111" in result.output
+
+    def test_format_no_args(self):
+        """format without args and without --all should show error."""
+        result = runner.invoke(app, ["format"])
+        assert result.exit_code != 0 or "Provide" in result.output or "GSE ID" in result.output

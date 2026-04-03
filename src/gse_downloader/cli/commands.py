@@ -644,7 +644,8 @@ def batch(
 
 @app.command("format")
 def format_data(
-    gse_id: str = typer.Argument(..., help="GSE identifier"),
+    gse_id: Optional[str] = typer.Argument(None, help="GSE identifier (omit with --all)"),
+    all_datasets: bool = typer.Option(False, "--all", "-a", help="Format all downloaded datasets"),
     config: Optional[Path] = typer.Option(None, "--config", "-c", help="Config file path"),
     output_dir: Optional[Path] = typer.Option(None, "--output", "-o", help="Data directory"),
 ):
@@ -652,9 +653,13 @@ def format_data(
 
     Creates raw/, processed/, metadata/ sub-directories and writes
     expression_matrix.csv and metadata.csv.
-    """
-    gse_id = gse_id.upper().strip()
 
+    Examples::
+
+        gse-downloader format GSE123456
+        gse-downloader format --all
+        gse-downloader format --all --output ./my_data
+    """
     if config and config.exists():
         cfg = load_config(config)
     else:
@@ -663,60 +668,108 @@ def format_data(
     if output_dir:
         cfg.download.output_dir = output_dir
 
-    gse_dir = cfg.download.output_dir / gse_id
-    if not gse_dir.exists():
-        console.print(f"[red]Directory not found: {gse_dir}[/red]")
-        raise typer.Exit(1)
-
-    # Detect omics type from archive.json
     from gse_downloader.archive.profile import ArchiveGenerator
     from gse_downloader.formatter.factory import FormatterFactory
+    from gse_downloader.parser.omics_detector import OmicsType
 
-    generator = ArchiveGenerator(cfg.download.output_dir)
-    profile = generator.load(gse_id)
+    def _format_one(gid: str) -> None:
+        """Format a single GSE dataset and print result."""
+        gse_dir = cfg.download.output_dir / gid
+        if not gse_dir.exists():
+            console.print(f"[red]Directory not found: {gse_dir}[/red]")
+            return
 
-    if profile:
-        omics_type = profile.schema.omics_type
-        console.print(f"Detected omics type: [cyan]{omics_type.value}[/cyan]")
+        generator = ArchiveGenerator(cfg.download.output_dir)
+        profile = generator.load(gid)
+
+        if profile:
+            omics_type = profile.schema.omics_type
+        else:
+            omics_type = OmicsType.OTHER
+
+        formatter = FormatterFactory.get(omics_type)
+        result = formatter.format(gse_dir)
+
+        status = "[green]OK[/green]" if result.success else "[yellow]Partial[/yellow]"
+        console.print(f"  {gid}  [{result.omics_type}]  {status}")
+        if result.errors:
+            for e in result.errors:
+                console.print(f"    [red]Error: {e}[/red]")
+
+    if all_datasets:
+        data_dir = cfg.download.output_dir
+        if not data_dir.exists():
+            console.print(f"[red]Directory not found: {data_dir}[/red]")
+            raise typer.Exit(1)
+
+        gse_dirs = sorted(
+            d for d in data_dir.iterdir() if d.is_dir() and d.name.upper().startswith("GSE")
+        )
+        if not gse_dirs:
+            console.print("[yellow]No GSE directories found[/yellow]")
+            raise typer.Exit(0)
+
+        console.print(f"[bold]Formatting {len(gse_dirs)} datasets...[/bold]\n")
+        for d in gse_dirs:
+            _format_one(d.name.upper())
+        console.print(f"\n[green][OK] Done — {len(gse_dirs)} datasets processed.[/green]")
+
     else:
-        from gse_downloader.parser.omics_detector import OmicsType
-        omics_type = OmicsType.OTHER
-        console.print("[yellow]No archive found, using generic formatter[/yellow]")
+        if not gse_id:
+            console.print("[red]Provide a GSE ID or use --all[/red]")
+            raise typer.Exit(1)
 
-    formatter = FormatterFactory.get(omics_type)
-    console.print(f"[bold]Formatting {gse_id} with {formatter.__class__.__name__}...[/bold]")
+        gse_id = gse_id.upper().strip()
 
-    result = formatter.format(gse_dir)
+        gse_dir = cfg.download.output_dir / gse_id
+        if not gse_dir.exists():
+            console.print(f"[red]Directory not found: {gse_dir}[/red]")
+            raise typer.Exit(1)
 
-    if result.success:
-        console.print(f"[green][OK] Format completed[/green]")
-    else:
-        console.print(f"[yellow]Format completed with warnings[/yellow]")
+        generator = ArchiveGenerator(cfg.download.output_dir)
+        profile = generator.load(gse_id)
 
-    # Show result table
-    table = Table(title=f"Format Result: {gse_id}", show_header=False)
-    table.add_column("Item", style="cyan")
-    table.add_column("Value", style="green")
+        if profile:
+            omics_type = profile.schema.omics_type
+            console.print(f"Detected omics type: [cyan]{omics_type.value}[/cyan]")
+        else:
+            omics_type = OmicsType.OTHER
+            console.print("[yellow]No archive found, using generic formatter[/yellow]")
 
-    table.add_row("Omics Type", result.omics_type)
-    table.add_row("Status", "[green]OK[/green]" if result.success else "[yellow]Partial[/yellow]")
-    if result.raw_dir and result.raw_dir.exists():
-        raw_count = len(list(result.raw_dir.glob("*")))
-        table.add_row("raw/ files", str(raw_count))
-    if result.processed_dir and result.processed_dir.exists():
-        proc_count = len(list(result.processed_dir.glob("*")))
-        table.add_row("processed/ files", str(proc_count))
-    if result.metadata_file:
-        table.add_row("metadata.csv", str(result.metadata_file.name))
-    if result.expression_matrix:
-        table.add_row("expression_matrix.csv", str(result.expression_matrix.name))
-    if result.moved_files:
-        table.add_row("Files moved", str(len(result.moved_files)))
-    if result.errors:
-        for e in result.errors:
-            table.add_row("[red]Error[/red]", e)
+        formatter = FormatterFactory.get(omics_type)
+        console.print(f"[bold]Formatting {gse_id} with {formatter.__class__.__name__}...[/bold]")
 
-    console.print(table)
+        result = formatter.format(gse_dir)
+
+        if result.success:
+            console.print(f"[green][OK] Format completed[/green]")
+        else:
+            console.print(f"[yellow]Format completed with warnings[/yellow]")
+
+        # Show result table
+        table = Table(title=f"Format Result: {gse_id}", show_header=False)
+        table.add_column("Item", style="cyan")
+        table.add_column("Value", style="green")
+
+        table.add_row("Omics Type", result.omics_type)
+        table.add_row("Status", "[green]OK[/green]" if result.success else "[yellow]Partial[/yellow]")
+        if result.raw_dir and result.raw_dir.exists():
+            raw_count = len(list(result.raw_dir.glob("*")))
+            table.add_row("raw/ files", str(raw_count))
+        if result.processed_dir and result.processed_dir.exists():
+            proc_count = len(list(result.processed_dir.glob("*")))
+            table.add_row("processed/ files", str(proc_count))
+        if result.metadata_file:
+            table.add_row("metadata.csv", str(result.metadata_file.name))
+        if result.expression_matrix:
+            table.add_row("expression_matrix.csv", str(result.expression_matrix.name))
+        if result.moved_files:
+            table.add_row("Files moved", str(len(result.moved_files)))
+        if result.errors:
+            for e in result.errors:
+                table.add_row("[red]Error[/red]", e)
+
+        console.print(table)
 
 
 @app.command()
