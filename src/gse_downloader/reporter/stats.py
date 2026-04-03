@@ -36,7 +36,8 @@ class SummaryStats:
     total_samples: int = 0
     by_organism: dict[str, int] = field(default_factory=dict)
     by_omics_type: dict[str, int] = field(default_factory=dict)
-    by_tissue: dict[str, int] = field(default_factory=dict)
+    # tissue → {"datasets": N, "samples": M}
+    by_tissue: dict[str, dict] = field(default_factory=dict)
     by_status: dict[str, int] = field(default_factory=dict)
 
 
@@ -102,9 +103,26 @@ class Statistics:
             omics = str(schema.omics_type.value if hasattr(schema.omics_type, 'value') else schema.omics_type)
             summary.by_omics_type[omics] = summary.by_omics_type.get(omics, 0) + 1
 
-            # By tissue
-            for tissue in schema.tissues:
-                summary.by_tissue[tissue] = summary.by_tissue.get(tissue, 0) + 1
+            # By tissue / organ
+            # Collect from sample characteristics first, fall back to schema.tissues
+            seen: set[str] = set()
+            tissue_labels: list[str] = []
+            for s in schema.samples:
+                t = (s.characteristics.tissue if s.characteristics else None) or ""
+                t = t.strip()
+                if t and t.lower() not in seen:
+                    seen.add(t.lower())
+                    tissue_labels.append(t)
+            for t in schema.tissues:
+                t = t.strip()
+                if t and t.lower() not in seen:
+                    seen.add(t.lower())
+                    tissue_labels.append(t)
+            for tissue in tissue_labels:
+                if tissue not in summary.by_tissue:
+                    summary.by_tissue[tissue] = {"datasets": 0, "samples": 0}
+                summary.by_tissue[tissue]["datasets"] += 1
+                summary.by_tissue[tissue]["samples"] += schema.sample_count
 
             # By status
             status = schema.status.value
@@ -217,6 +235,8 @@ class Statistics:
             "total_samples": summary.total_samples,
             "by_organism": summary.by_organism,
             "by_omics_type": summary.by_omics_type,
-            "by_tissue": dict(sorted(summary.by_tissue.items(), key=lambda x: x[1], reverse=True)[:20]),
+            "by_tissue": {k: v for k, v in sorted(
+                summary.by_tissue.items(), key=lambda x: x[1]["datasets"], reverse=True
+            )[:20]},
             "by_status": summary.by_status,
         }

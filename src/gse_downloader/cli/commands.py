@@ -317,9 +317,19 @@ def _print_archive_table(profile: ArchiveProfile):
 @app.command()
 def stats(
     output_dir: Optional[Path] = typer.Option(None, "--output-dir", "-o", help="Data directory"),
-    by: Optional[str] = typer.Option(None, "--by", "-b", help="Group by (organism/omics_type)"),
+    by: Optional[str] = typer.Option(
+        None, "--by", "-b",
+        help="Group by: organism / omics_type / tissue  (omit to show all)"
+    ),
 ):
-    """Show statistics for all downloaded datasets."""
+    """Show statistics for all downloaded datasets.
+
+    Examples::
+
+        gse-downloader stats
+        gse-downloader stats --by tissue
+        gse-downloader stats --by organism
+    """
     cfg = Config()
     data_dir = output_dir or cfg.download.output_dir
 
@@ -348,9 +358,47 @@ def stats(
     # Summary
     total_samples = sum(p.schema.sample_count for p in archives)
     console.print(f"Total Datasets: [cyan]{len(archives)}[/cyan]")
-    console.print(f"Total Samples: [cyan]{total_samples}[/cyan]")
+    console.print(f"Total Samples:  [cyan]{total_samples}[/cyan]")
 
-    # Group by
+    # ── helpers ────────────────────────────────────────────────────────────────
+
+    def _collect_tissues(p) -> list[str]:
+        """Return tissue/organ labels for a dataset profile.
+
+        Priority order:
+          1. sample.characteristics.tissue
+          2. schema.tissues  (pre-extracted list)
+          3. sample.source_name as last-resort fallback
+        """
+        seen: set[str] = set()
+        result: list[str] = []
+
+        # From individual sample characteristics
+        for s in p.schema.samples:
+            t = (s.characteristics.tissue if s.characteristics else None) or ""
+            t = t.strip()
+            if t and t.lower() not in seen:
+                seen.add(t.lower())
+                result.append(t)
+
+        # From pre-extracted schema.tissues (may catch cases where samples are absent)
+        for t in p.schema.tissues:
+            t = t.strip()
+            if t and t.lower() not in seen:
+                seen.add(t.lower())
+                result.append(t)
+
+        # Fallback: source_name of samples (only when nothing else found)
+        if not result:
+            for s in p.schema.samples:
+                t = (s.source_name or "").strip()
+                if t and t.lower() not in seen:
+                    seen.add(t.lower())
+                    result.append(t)
+
+        return result
+
+    # ── By Organism ────────────────────────────────────────────────────────────
     if by == "organism" or by is None:
         console.print("\n[bold]By Organism:[/bold]")
         by_organism: dict = {}
@@ -372,6 +420,7 @@ def stats(
 
         console.print(table)
 
+    # ── By Omics Type ──────────────────────────────────────────────────────────
     if by == "omics_type" or by is None:
         console.print("\n[bold]By Omics Type:[/bold]")
         by_omics: dict = {}
@@ -391,6 +440,38 @@ def stats(
             table.add_row(name, str(counts["datasets"]), str(counts["samples"]))
 
         console.print(table)
+
+    # ── By Tissue / Organ ──────────────────────────────────────────────────────
+    if by == "tissue" or by is None:
+        console.print("\n[bold]By Tissue / Organ:[/bold]")
+        by_tissue: dict = {}
+        no_tissue_datasets = 0
+
+        for p in archives:
+            tissues = _collect_tissues(p)
+            if tissues:
+                for t in tissues:
+                    if t not in by_tissue:
+                        by_tissue[t] = {"datasets": 0, "samples": 0}
+                    by_tissue[t]["datasets"] += 1
+                    by_tissue[t]["samples"] += p.schema.sample_count
+            else:
+                no_tissue_datasets += 1
+
+        if not by_tissue:
+            console.print("[dim]No tissue/organ information found in archives.[/dim]")
+        else:
+            table = Table()
+            table.add_column("Tissue / Organ", style="cyan")
+            table.add_column("Datasets", justify="right")
+            table.add_column("Samples", justify="right")
+
+            for name, counts in sorted(by_tissue.items(), key=lambda x: x[1]["datasets"], reverse=True):
+                table.add_row(name, str(counts["datasets"]), str(counts["samples"]))
+
+            console.print(table)
+            if no_tissue_datasets:
+                console.print(f"[dim]{no_tissue_datasets} dataset(s) had no tissue annotation.[/dim]")
 
 
 @app.command()
