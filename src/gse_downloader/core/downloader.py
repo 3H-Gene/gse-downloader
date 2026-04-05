@@ -9,7 +9,10 @@ This module handles the core downloading functionality with support for:
 
 from __future__ import annotations
 
+import concurrent.futures
 import hashlib
+import sys
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -52,7 +55,7 @@ class GSEDownloader:
 
     # Default headers
     DEFAULT_HEADERS = {
-        "User-Agent": "GSE-Downloader/1.0 (https://github.com/yourname/gse_downloader)",
+        "User-Agent": "GSE-Downloader/1.0 (https://github.com/3H-Gene/gse-downloader)",
         "Accept": "*/*",
     }
 
@@ -72,7 +75,7 @@ class GSEDownloader:
 
         Args:
             output_dir: Base output directory
-            max_workers: Maximum concurrent downloads
+            max_workers: Maximum parallel file downloads (``download_gse`` uses a thread pool)
             timeout: Request timeout in seconds
             verify_ssl: Whether to verify SSL certificates
             retry_times: Number of retry attempts
@@ -91,19 +94,30 @@ class GSEDownloader:
         self.checksum_algorithm = checksum_algorithm
         self.show_progress = show_progress
 
+        self._thread_local = threading.local()
+
         # Rate limiter (token bucket)
         if rate_limit and rate_limit > 0:
             self._rate_limiter = RateLimiter(requests_per_second=rate_limit)
         else:
             self._rate_limiter = NoopRateLimiter()
 
-        # Create session with retry strategy
-        self.session = self._create_session()
+        # Main-thread HTTP session (worker threads each get their own via ``session`` property)
+        self._main_session = self._create_session()
 
         logger.info(
             f"Initialized GSEDownloader (output_dir={self.output_dir}, "
             f"rate_limit={rate_limit}/s)"
         )
+
+    @property
+    def session(self) -> requests.Session:
+        """HTTP session for the current thread (``requests.Session`` is not thread-safe)."""
+        if threading.current_thread() is threading.main_thread():
+            return self._main_session
+        if not hasattr(self._thread_local, "session"):
+            self._thread_local.session = self._create_session()
+        return self._thread_local.session
 
     def _create_session(self) -> requests.Session:
         """Create requests session with retry strategy.
@@ -129,11 +143,15 @@ class GSEDownloader:
 
         Args:
             gse_id: GSE identifier
-            filename: Filename
+            filename: Filename (reserved for future per-file URL construction)
 
         Returns:
             Full download URL
         """
+        # NOTE: `filename` is intentionally unused for now.
+        # The GEO download endpoint returns a tar bundle for the whole dataset.
+        # Individual file URLs would require FTP listing logic; kept here as an
+        # extension point for future direct-file download support.
         return f"{self.FTP_BASE_URL}?acc={gse_id}&format=file"
 
     def download_file(
@@ -173,6 +191,9 @@ class GSEDownloader:
                     headers["Range"] = f"bytes={existing_size}-"
                     logger.debug(f"Resuming {filename} from byte {existing_size}")
 
+            # Rate-limit before hitting the server (same as download_file_with_url)
+            self._rate_limiter.acquire()
+
             # Make request
             response = self.session.get(
                 url,
@@ -199,6 +220,17 @@ class GSEDownloader:
                     filepath=filepath,
                     size=existing_size,
                     duration=time.time() - start_time,
+                )
+
+            # Reject other non-success HTTP statuses (avoid silent 5xx/403 bodies)
+            try:
+                response.raise_for_status()
+            except requests.exceptions.HTTPError as e:
+                logger.error(f"HTTP error downloading {filename}: {e}")
+                return DownloadResult(
+                    filename=filename,
+                    success=False,
+                    error=f"HTTP {response.status_code}: {filename}",
                 )
 
             # Check for resume
@@ -284,7 +316,6 @@ class GSEDownloader:
             DownloadResult instance
         """
         import gzip
-        import io
 
         CHUNK_SIZE = 65536  # 64 KB – larger chunks = faster I/O + smoother speed readings
 
@@ -331,6 +362,18 @@ class GSEDownloader:
                     size=existing_size, duration=time.time() - start_time,
                 )
 
+            try:
+                response.raise_for_status()
+            except requests.exceptions.HTTPError as e:
+                logger.error(f"HTTP error downloading {filename}: {e}")
+                if multi_progress:
+                    multi_progress.finish_file(filename, success=False)
+                return DownloadResult(
+                    filename=filename,
+                    success=False,
+                    error=f"HTTP {response.status_code}: {filename}",
+                )
+
             content_type = response.headers.get("Content-Type", "")
 
             # ── Determine total size for progress bar ──────────────────────
@@ -364,14 +407,15 @@ class GSEDownloader:
 
             # ── Branch: needs_gzip ─────────────────────────────────────────
             if needs_gzip and content_type not in ("application/x-gzip", "application/gzip"):
-                # SOFT query API may return plain text – wrap in gzip
+                # SOFT query API may return plain text – wrap in gzip (streamed, not buffered in memory)
                 if multi_progress:
                     multi_progress.start_file(filename, total_size, existing_size)
-                content = response.content
-                if multi_progress:
-                    multi_progress.advance(len(content))
                 with gzip.open(filepath, "wb") as f:
-                    f.write(content)
+                    for chunk in response.iter_content(chunk_size=CHUNK_SIZE):
+                        if chunk:
+                            f.write(chunk)
+                            if multi_progress:
+                                multi_progress.advance(len(chunk))
                 final_size = filepath.stat().st_size
                 md5_hash = self._calculate_checksum(filepath)
                 if multi_progress:
@@ -470,19 +514,51 @@ class GSEDownloader:
         import tarfile
 
         extracted_files = []
+        output_dir = output_dir.resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
+
+        def _is_unsafe_member(member: tarfile.TarInfo) -> bool:
+            """Reject path traversal / absolute paths (Python < 3.12 has no filter=)."""
+            name = member.name
+            if name.startswith(("/", "\\")) or ".." in Path(name).parts:
+                return True
+            if ".." in name or name.startswith(".."):
+                return True
+            return False
+
+        def _safe_extractall(tar: tarfile.TarFile) -> None:
+            if sys.version_info >= (3, 12):
+                tar.extractall(output_dir, filter="data")
+            else:
+                members = [m for m in tar.getmembers() if not _is_unsafe_member(m)]
+                tar.extractall(output_dir, members=members)
+
+        def _listed_file_paths(tar: tarfile.TarFile) -> list[Path]:
+            """Paths for regular files whose resolved location stays under output_dir."""
+            paths: list[Path] = []
+            for m in tar.getmembers():
+                if not m.isfile():
+                    continue
+                dest = (output_dir / m.name).resolve()
+                try:
+                    dest.relative_to(output_dir)
+                except ValueError:
+                    logger.warning(f"Skipping member outside output dir: {m.name!r}")
+                    continue
+                paths.append(dest)
+            return paths
 
         try:
             if archive_path.suffix == ".gz" or str(archive_path).endswith(".tgz"):
                 # TGZ file
                 with tarfile.open(archive_path, "r:gz") as tar:
-                    tar.extractall(output_dir)
-                    extracted_files = [output_dir / member.name for member in tar.getmembers() if member.isfile()]
+                    _safe_extractall(tar)
+                    extracted_files = _listed_file_paths(tar)
             else:
                 # Regular TAR file
                 with tarfile.open(archive_path, "r") as tar:
-                    tar.extractall(output_dir)
-                    extracted_files = [output_dir / member.name for member in tar.getmembers() if member.isfile()]
+                    _safe_extractall(tar)
+                    extracted_files = _listed_file_paths(tar)
 
             logger.info(f"Extracted {len(extracted_files)} files from {archive_path.name}")
 
@@ -607,7 +683,7 @@ class GSEDownloader:
 
         total_remote = sum(remote_sizes.values())
 
-        # Account for already-downloaded bytes in progress totals
+        # Bytes already on disk (resume / partial) — seed overall progress bar
         already_done = sum(
             (Path(output_dir) / fn).stat().st_size
             for fn in remote_sizes
@@ -617,54 +693,88 @@ class GSEDownloader:
 
         results: dict[str, DownloadResult] = {}
 
-        with MultiFileProgress(len(files), total_for_progress, self.show_progress) as mp:
-            for file_info in files:
+        skipped: list[tuple[dict, Path]] = []
+        download_queue: list[dict] = []
+        for file_info in files:
+            filename = file_info["filename"]
+            filepath = output_dir / filename
+            if self.auto_resume and filepath.exists():
+                file_state = info.files.get(filename)
+                if file_state and file_state.verified:
+                    skipped.append((file_info, filepath))
+                    continue
+            download_queue.append(file_info)
+
+        progress_lock = (
+            threading.Lock()
+            if len(download_queue) > 1 and self.max_workers > 1
+            else None
+        )
+
+        def _apply_download_result(filename: str, result: DownloadResult) -> None:
+            if result.success:
+                state_manager.update_file_state(
+                    info,
+                    filename,
+                    result.size,
+                    result.md5,
+                    verified=True,
+                )
+            else:
+                logger.error(f"Failed to download {filename}: {result.error}")
+                info.last_error = result.error
+                state_manager.save_state(info)
+
+        with MultiFileProgress(
+            len(files),
+            total_for_progress,
+            self.show_progress,
+            initial_completed_bytes=already_done,
+            lock=progress_lock,
+        ) as mp:
+            for file_info, filepath in skipped:
                 filename = file_info["filename"]
-                url = file_info.get("url")
-                needs_gzip = file_info.get("needs_gzip", False)
-                is_archive = file_info.get("is_archive", False)
-                logger.info(f"Downloading {filename}...")
+                logger.info(f"Skipping {filename} (already verified)")
+                skip_size = filepath.stat().st_size
+                mp.start_file(filename, skip_size, skip_size)
+                mp.finish_file(filename, success=True, size=skip_size)
+                results[filename] = DownloadResult(
+                    filename=filename,
+                    success=True,
+                    filepath=filepath,
+                    size=skip_size,
+                )
 
-                # Check if file exists and is complete
-                filepath = output_dir / filename
-                if self.auto_resume and filepath.exists():
-                    file_state = info.files.get(filename)
-                    if file_state and file_state.verified:
-                        logger.info(f"Skipping {filename} (already verified)")
-                        skip_size = filepath.stat().st_size
-                        # Still advance overall bar for already-done files
-                        mp.start_file(filename, skip_size, skip_size)
-                        mp.finish_file(filename, success=True, size=skip_size)
-                        results[filename] = DownloadResult(
-                            filename=filename,
-                            success=True,
-                            filepath=filepath,
-                            size=skip_size,
-                        )
-                        continue
-
-                # Download file (progress updates flow through mp)
-                result = self.download_file_with_url(
-                    filename, url, output_dir, self.auto_resume,
-                    needs_gzip=needs_gzip,
-                    is_archive=is_archive,
+            def _download_one(fi: dict) -> tuple[str, DownloadResult]:
+                fn = fi["filename"]
+                u = fi.get("url")
+                ng = fi.get("needs_gzip", False)
+                ia = fi.get("is_archive", False)
+                logger.info(f"Downloading {fn}...")
+                res = self.download_file_with_url(
+                    fn,
+                    u,
+                    output_dir,
+                    self.auto_resume,
+                    needs_gzip=ng,
+                    is_archive=ia,
                     multi_progress=mp,
                 )
-                results[filename] = result
+                return fn, res
 
-                # Update state
-                if result.success:
-                    state_manager.update_file_state(
-                        info,
-                        filename,
-                        result.size,
-                        result.md5,
-                        verified=True,
-                    )
-                else:
-                    logger.error(f"Failed to download {filename}: {result.error}")
-                    info.last_error = result.error
-                    state_manager.save_state(info)
+            if len(download_queue) > 1 and self.max_workers > 1:
+                workers = min(self.max_workers, len(download_queue))
+                with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+                    futures = [ex.submit(_download_one, fi) for fi in download_queue]
+                    for fut in concurrent.futures.as_completed(futures):
+                        filename, result = fut.result()
+                        results[filename] = result
+                        _apply_download_result(filename, result)
+            else:
+                for fi in download_queue:
+                    filename, result = _download_one(fi)
+                    results[filename] = result
+                    _apply_download_result(filename, result)
 
         # Check if all files are complete
         incomplete_files = state_manager.get_incomplete_files()
@@ -703,7 +813,7 @@ class GSEDownloader:
                             filename=f.name,
                             url="",
                             size=f.stat().st_size,
-                            type="supplementary" if "suppl" in f.name.lower()
+                            file_type="supplementary" if "suppl" in f.name.lower()
                                  else ("processed" if "_processed_" in f.name else "metadata"),
                         ))
 
@@ -748,7 +858,10 @@ class GSEDownloader:
 
     def close(self) -> None:
         """Close the downloader and cleanup resources."""
-        self.session.close()
+        self._main_session.close()
+        worker_sess = getattr(self._thread_local, "session", None)
+        if worker_sess is not None:
+            worker_sess.close()
         logger.info("Downloader closed")
 
     def __enter__(self) -> "GSEDownloader":

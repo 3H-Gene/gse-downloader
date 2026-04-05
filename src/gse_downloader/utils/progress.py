@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import io
 import sys
+import threading
 import time
+from contextlib import nullcontext
 from typing import Optional
 
 from rich.console import Console
@@ -146,10 +148,19 @@ class MultiFileProgress:
     before downloading each file and ``finish_file`` when done.
     """
 
-    def __init__(self, total_files: int, total_size: int = 0, show: bool = True):
+    def __init__(
+        self,
+        total_files: int,
+        total_size: int = 0,
+        show: bool = True,
+        initial_completed_bytes: int = 0,
+        lock: Optional[threading.Lock] = None,
+    ):
         self.total_files = total_files
         self.total_size = total_size
         self.show = show
+        self._initial_completed_bytes = initial_completed_bytes
+        self._lock = lock
 
         self._console: Optional[Console] = None
         self._progress: Optional[Progress] = None
@@ -157,6 +168,9 @@ class MultiFileProgress:
         self._file_task: Optional[TaskID] = None      # current file bar
         self._files_done: int = 0
         self._bytes_done: int = 0
+
+    def _lock_ctx(self):
+        return self._lock if self._lock is not None else nullcontext()
 
     def __enter__(self) -> "MultiFileProgress":
         if self.show:
@@ -180,7 +194,7 @@ class MultiFileProgress:
                 self._overall_task = self._progress.add_task(
                     description=f"[bold green]Total ({self.total_files} files)",
                     total=self.total_size,
-                    completed=0,
+                    completed=self._initial_completed_bytes,
                 )
         return self
 
@@ -190,50 +204,53 @@ class MultiFileProgress:
 
     def start_file(self, filename: str, total_size: int, resume_from: int = 0) -> None:
         """Call before downloading a new file."""
-        if not self._progress:
-            return
-        label = filename if len(filename) <= 42 else "..." + filename[-39:]
-        self._file_task = self._progress.add_task(
-            description=f"[cyan]{label}",
-            total=total_size if total_size > 0 else None,
-            completed=resume_from,
-        )
+        with self._lock_ctx():
+            if not self._progress:
+                return
+            label = filename if len(filename) <= 42 else "..." + filename[-39:]
+            self._file_task = self._progress.add_task(
+                description=f"[cyan]{label}",
+                total=total_size if total_size > 0 else None,
+                completed=resume_from,
+            )
 
     def advance(self, n_bytes: int) -> None:
         """Advance both per-file and overall progress."""
-        if not self._progress:
-            return
-        if self._file_task is not None:
-            self._progress.advance(self._file_task, n_bytes)
-        if self._overall_task is not None:
-            self._progress.advance(self._overall_task, n_bytes)
+        with self._lock_ctx():
+            if not self._progress:
+                return
+            if self._file_task is not None:
+                self._progress.advance(self._file_task, n_bytes)
+            if self._overall_task is not None:
+                self._progress.advance(self._overall_task, n_bytes)
 
     def finish_file(self, filename: str, success: bool, size: int = 0) -> None:
         """Call after a file download finishes."""
-        if not self._progress:
-            return
-        self._files_done += 1
-        if self._file_task is not None:
-            # Complete and remove per-file task
-            # Use get_task to safely look up by TaskID
-            try:
-                task = next(t for t in self._progress.tasks if t.id == self._file_task)
-                if task.total is not None:
-                    self._progress.update(self._file_task, completed=task.total)
-            except StopIteration:
-                pass  # task already removed
-            try:
-                self._progress.remove_task(self._file_task)
-            except Exception:
-                pass
-            self._file_task = None
+        with self._lock_ctx():
+            if not self._progress:
+                return
+            self._files_done += 1
+            if self._file_task is not None:
+                # Complete and remove per-file task
+                # Use get_task to safely look up by TaskID
+                try:
+                    task = next(t for t in self._progress.tasks if t.id == self._file_task)
+                    if task.total is not None:
+                        self._progress.update(self._file_task, completed=task.total)
+                except StopIteration:
+                    pass  # task already removed
+                try:
+                    self._progress.remove_task(self._file_task)
+                except Exception:
+                    pass
+                self._file_task = None
 
-        # Update overall description
-        if self._overall_task is not None:
-            self._progress.update(
-                self._overall_task,
-                description=f"[bold green]Total ({self._files_done}/{self.total_files} files)",
-            )
+            # Update overall description
+            if self._overall_task is not None:
+                self._progress.update(
+                    self._overall_task,
+                    description=f"[bold green]Total ({self._files_done}/{self.total_files} files)",
+                )
 
     def log(self, msg: str) -> None:
         """Print a log line without breaking the progress display."""

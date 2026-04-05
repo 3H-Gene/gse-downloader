@@ -56,6 +56,17 @@ console = Console(highlight=False)
 logger = get_logger("cli")
 
 
+def _resolve_cli_config(ctx: typer.Context, config: Optional[Path]) -> Config:
+    """Resolve Config: explicit ``--config`` on the subcommand wins, then main callback, else defaults."""
+    if config is not None and config.exists():
+        return load_config(config)
+    obj = getattr(ctx, "obj", None) or {}
+    base = obj.get("config")
+    if base is not None:
+        return base
+    return Config()
+
+
 @app.callback(invoke_without_command=True)
 def main(
     ctx: typer.Context,
@@ -65,6 +76,8 @@ def main(
     log_dir: Optional[Path] = typer.Option(None, "--log-dir", help="Log directory"),
 ):
     """Main entry point."""
+    ctx.ensure_object(dict)
+
     # Apply UTF-8 fix at runtime (avoids breaking pytest capture at import time)
     _ensure_utf8_streams()
     global console
@@ -77,14 +90,15 @@ def main(
     # Setup logging
     setup_logger(log_dir=log_dir, log_level=log_level)
 
-    # Load config
-    if config and config.exists():
-        cfg = load_config(config)
-        typer.context = {"config": cfg}
+    # Load config for subcommands (overridable per-command with --config)
+    if config is not None and config.exists():
+        ctx.obj["config"] = load_config(config)
+        ctx.obj["config_path"] = config
 
 
 @app.command()
 def download(
+    ctx: typer.Context,
     gse_id: str = typer.Argument(..., help="GSE identifier (e.g., GSE123456)"),
     config: Optional[Path] = typer.Option(None, "--config", "-c", help="Config file path"),
     output_dir: Optional[Path] = typer.Option(None, "--output", "-o", help="Output directory"),
@@ -99,11 +113,7 @@ def download(
     """
     gse_id = gse_id.upper().strip()
 
-    # Load config
-    if config and config.exists():
-        cfg = load_config(config)
-    else:
-        cfg = Config()
+    cfg = _resolve_cli_config(ctx, config)
 
     if output_dir:
         cfg.download.output_dir = output_dir
@@ -240,12 +250,13 @@ def download(
 
 @app.command()
 def status(
+    ctx: typer.Context,
     gse_id: str = typer.Argument(..., help="GSE identifier"),
 ):
     """Check download status of a GSE dataset."""
     gse_id = gse_id.upper().strip()
 
-    cfg = Config()
+    cfg = _resolve_cli_config(ctx, None)
     state_manager = StateManager(cfg.download.output_dir / gse_id)
     info = state_manager.load_state()
 
@@ -274,13 +285,14 @@ def status(
 
 @app.command()
 def archive(
+    ctx: typer.Context,
     gse_id: str = typer.Argument(..., help="GSE identifier"),
     format: str = typer.Option("table", "--format", "-f", help="Output format (table/json)"),
 ):
     """View data archive for a GSE dataset."""
     gse_id = gse_id.upper().strip()
 
-    cfg = Config()
+    cfg = _resolve_cli_config(ctx, None)
     generator = ArchiveGenerator(cfg.download.output_dir)
     profile = generator.load(gse_id)
 
@@ -316,6 +328,7 @@ def _print_archive_table(profile: ArchiveProfile):
 
 @app.command()
 def stats(
+    ctx: typer.Context,
     output_dir: Optional[Path] = typer.Option(None, "--output-dir", "-o", help="Data directory"),
     by: Optional[str] = typer.Option(
         None, "--by", "-b",
@@ -330,7 +343,7 @@ def stats(
         gse-downloader stats --by tissue
         gse-downloader stats --by organism
     """
-    cfg = Config()
+    cfg = _resolve_cli_config(ctx, None)
     data_dir = output_dir or cfg.download.output_dir
 
     if not data_dir.exists():
@@ -476,6 +489,7 @@ def stats(
 
 @app.command()
 def verify(
+    ctx: typer.Context,
     gse_id: Optional[str] = typer.Argument(None, help="GSE identifier (omit with --all)"),
     all_datasets: bool = typer.Option(False, "--all", "-a", help="Verify all downloaded datasets"),
     output_dir: Optional[Path] = typer.Option(None, "--output-dir", "-o", help="Data directory"),
@@ -489,10 +503,7 @@ def verify(
         gse-downloader verify --all
         gse-downloader verify --all --output-dir ./my_data
     """
-    if config and config.exists():
-        cfg = load_config(config)
-    else:
-        cfg = Config()
+    cfg = _resolve_cli_config(ctx, config)
 
     if output_dir:
         cfg.download.output_dir = output_dir
@@ -589,6 +600,7 @@ def verify(
 
 @app.command()
 def batch(
+    ctx: typer.Context,
     input_file: Path = typer.Argument(..., help="File containing GSE IDs (one per line)"),
     config: Optional[Path] = typer.Option(None, "--config", "-c", help="Config file path"),
     output_dir: Optional[Path] = typer.Option(None, "--output", "-o", help="Output directory"),
@@ -601,7 +613,7 @@ def batch(
         raise typer.Exit(1)
 
     # Load GSE IDs
-    with open(input_file, "r") as f:
+    with open(input_file, "r", encoding="utf-8") as f:
         gse_ids = [line.strip().upper() for line in f if line.strip() and not line.startswith("#")]
 
     if not gse_ids:
@@ -610,11 +622,7 @@ def batch(
 
     console.print(f"[bold]Batch download: {len(gse_ids)} datasets[/bold]")
 
-    # Load config
-    if config and config.exists():
-        cfg = load_config(config)
-    else:
-        cfg = Config()
+    cfg = _resolve_cli_config(ctx, config)
 
     if output_dir:
         cfg.download.output_dir = output_dir
@@ -725,6 +733,7 @@ def batch(
 
 @app.command("format")
 def format_data(
+    ctx: typer.Context,
     gse_id: Optional[str] = typer.Argument(None, help="GSE identifier (omit with --all)"),
     all_datasets: bool = typer.Option(False, "--all", "-a", help="Format all downloaded datasets"),
     config: Optional[Path] = typer.Option(None, "--config", "-c", help="Config file path"),
@@ -741,10 +750,7 @@ def format_data(
         gse-downloader format --all
         gse-downloader format --all --output ./my_data
     """
-    if config and config.exists():
-        cfg = load_config(config)
-    else:
-        cfg = Config()
+    cfg = _resolve_cli_config(ctx, config)
 
     if output_dir:
         cfg.download.output_dir = output_dir
@@ -913,6 +919,7 @@ def search(
 
 @app.command()
 def info(
+    ctx: typer.Context,
     gse_id: str = typer.Argument(..., help="GSE identifier (e.g., GSE123456)"),
     format: str = typer.Option("table", "--format", "-f", help="Output format: table or json"),
     local: bool = typer.Option(False, "--local", "-l", help="Show local archive only (no network)"),
@@ -928,7 +935,7 @@ def info(
         gse-downloader info GSE134520 --format json
     """
     gse_id = gse_id.upper().strip()
-    cfg = Config()
+    cfg = _resolve_cli_config(ctx, None)
 
     # Try local archive first
     from gse_downloader.archive.profile import ArchiveGenerator
@@ -1140,6 +1147,7 @@ level = "INFO"
 
 @app.command()
 def profile(
+    ctx: typer.Context,
     gse_id: str = typer.Argument(..., help="GSE identifier (e.g., GSE123456)"),
     output_dir: Optional[Path] = typer.Option(None, "--output", "-o", help="Base output directory"),
     config: Optional[Path] = typer.Option(None, "--config", "-c", help="Config file path"),
@@ -1158,13 +1166,10 @@ def profile(
     gse_id = gse_id.upper().strip()
 
     # Resolve data directory
-    if config and config.exists():
-        cfg = load_config(config)
-        base_dir = cfg.download.output_dir
-    else:
-        base_dir = output_dir or Path("./gse_data")
+    cfg = _resolve_cli_config(ctx, config)
+    base_dir = output_dir or cfg.download.output_dir
 
-    gse_dir = base_dir / gse_id if base_dir else Path(f"./gse_data/{gse_id}")
+    gse_dir = base_dir / gse_id
 
     if not gse_dir.exists():
         console.print(f"[red]Directory not found: {gse_dir}[/red]")
@@ -1220,6 +1225,7 @@ def profile(
 
 @app.command()
 def pipeline(
+    ctx: typer.Context,
     input_arg: str = typer.Argument(
         ...,
         help=(
@@ -1266,12 +1272,18 @@ def pipeline(
         raw = input_arg
 
     # Build pipeline
-    cfg = load_config(config) if (config and config.exists()) else Config()
+    cfg = _resolve_cli_config(ctx, config)
     if output_dir:
         cfg.download.output_dir = output_dir
 
+    pipeline_config_path: Optional[Path] = None
+    if config is not None and config.exists():
+        pipeline_config_path = config
+    else:
+        pipeline_config_path = ctx.obj.get("config_path")
+
     pl = Pipeline(
-        config_path=config,
+        config_path=pipeline_config_path,
         output_dir=cfg.download.output_dir,
         run_profiling=not no_profile,
     )

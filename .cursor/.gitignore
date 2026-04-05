@@ -1,0 +1,4 @@
+# Ignore temporary cursor-agent prompt files
+fix_prompt.txt
+fix_medium_prompt.txt
+REVIEW_PROMPT.md

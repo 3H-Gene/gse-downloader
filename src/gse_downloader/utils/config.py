@@ -151,8 +151,10 @@ class Config(BaseModel):
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
 
+        # mode="json" ensures Path and other types are TOML-serializable
+        data = self.model_dump(mode="json")
         with open(path, "wb") as f:
-            tomli_w.dumps(self.model_dump(), f)
+            tomli_w.dump(data, f)
 
     def get_output_dir(self, gse_id: str) -> Path:
         """Get output directory for a specific GSE.

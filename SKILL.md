@@ -1,6 +1,6 @@
 ---
 name: gse-downloader
-version: 1.1.0
+version: 1.1.1
 description: |
   企业级 GEO 数据批量下载与数据画像工具，专为生物信息学研究人员设计。
   支持标准化 JSON 输入（兼容 geo-search-skill 输出）、多路径智能下载策略、

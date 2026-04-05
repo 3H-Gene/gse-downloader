@@ -24,7 +24,7 @@ class GEOFile:
     filename: str
     size: int = 0
     url: Optional[str] = None
-    type: str = "supplementary"
+    file_type: str = "supplementary"
 
 
 @dataclass
@@ -57,7 +57,7 @@ class GEOQuery:
     GEO_BASE_URL = "https://www.ncbi.nlm.nih.gov/geo/"
 
     DEFAULT_HEADERS = {
-        "User-Agent": "GSE-Downloader/1.0 (https://github.com/yourname/gse_downloader)",
+        "User-Agent": "GSE-Downloader/1.0 (https://github.com/3H-Gene/gse-downloader)",
     }
 
     def __init__(self, email: str = "anonymous@example.com", api_key: Optional[str] = None):
@@ -167,6 +167,7 @@ class GEOQuery:
                 "db": "gds",
                 "term": gse_id,
                 "retmode": "json",
+                "email": self.email,
             }
             if self.api_key:
                 params["api_key"] = self.api_key
@@ -712,6 +713,11 @@ class GEOQuery:
         # Add GSE prefix to search term
         search_term = f"{term}[ALL] AND GSE[DATASET]"
 
+        # NOTE: _esearch("gds", ...) returns GDS internal numeric UIDs, *not* GSE accession
+        # numbers. The conversion f"GSE{id}" below works for the common case where the GDS
+        # UID matches the GSE numeric suffix, but may occasionally return an incorrect
+        # accession for very old or redirected entries.  Use search_series_detailed() for
+        # verified GSE accessions via eSummary.
         ids = self._esearch("gds", search_term, retmax)
 
         # Convert to GSE IDs

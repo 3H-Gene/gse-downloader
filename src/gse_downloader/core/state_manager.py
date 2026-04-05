@@ -7,7 +7,7 @@ resumable status, and file integrity.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -54,17 +54,12 @@ class DownloadInfo:
     status: DownloadState = DownloadState.NOT_STARTED
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
-    files: dict[str, FileState] = None
+    files: dict[str, FileState] = field(default_factory=dict)
     total_files: int = 0
     total_bytes: int = 0
     downloaded_bytes: int = 0
     retry_count: int = 0
     last_error: Optional[str] = None
-
-    def __post_init__(self):
-        """Post initialization."""
-        if self.files is None:
-            self.files = {}
 
     @property
     def progress_percentage(self) -> float:

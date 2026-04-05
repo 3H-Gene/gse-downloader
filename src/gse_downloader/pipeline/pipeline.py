@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Optional, Union
 
 from gse_downloader.cache.metadata_cache import get_metadata_cache
+from gse_downloader.core.checksum import ChecksumVerifier
 from gse_downloader.core.downloader import GSEDownloader
 from gse_downloader.core.input_schema import GseInput, parse_input
 from gse_downloader.core.state_manager import DownloadState, StateManager
@@ -298,26 +299,54 @@ class Pipeline:
             return StepResult(step="download", success=False, message=str(exc))
 
     def _step_verify(self, gse_id: str, output_dir: Path) -> StepResult:
-        """Verify downloaded files using checksum + size check."""
+        """Verify downloaded files: MD5 from state when present, else non-empty size."""
         try:
-            from gse_downloader.core.checksum import ChecksumVerifier
+            state_mgr = StateManager(output_dir)
+            info = state_mgr.load_state()
+            algo = self.config.checksum.algorithm.lower()
+            if algo not in ChecksumVerifier.SUPPORTED_ALGORITHMS:
+                algo = "md5"
+            verifier = ChecksumVerifier(algorithm=algo)
 
             verified = 0
             failed = 0
+            skipped_no_expected = 0
             files_checked = 0
 
-            for filepath in output_dir.glob("*"):
-                if not filepath.is_file():
-                    continue
-                if filepath.suffix in (".json", ".tmp"):
-                    continue
-                files_checked += 1
-                # Re-compute checksum and check file is non-zero
-                if filepath.stat().st_size > 0:
-                    verified += 1
-                else:
-                    failed += 1
-                    logger.warning(f"Zero-byte file detected: {filepath.name}")
+            if info.files:
+                for filename, fs in info.files.items():
+                    filepath = output_dir / filename
+                    if not filepath.is_file():
+                        failed += 1
+                        files_checked += 1
+                        logger.warning(f"Missing file for verification: {filename}")
+                        continue
+                    files_checked += 1
+                    if fs.md5:
+                        if verifier.verify(filepath, fs.md5):
+                            verified += 1
+                        else:
+                            failed += 1
+                    else:
+                        skipped_no_expected += 1
+                        if filepath.stat().st_size > 0:
+                            verified += 1
+                        else:
+                            failed += 1
+                            logger.warning(f"Zero-byte file (no checksum in state): {filename}")
+            else:
+                # No download state: best-effort size check on loose files
+                for filepath in output_dir.glob("*"):
+                    if not filepath.is_file():
+                        continue
+                    if filepath.suffix in (".json", ".tmp"):
+                        continue
+                    files_checked += 1
+                    if filepath.stat().st_size > 0:
+                        verified += 1
+                    else:
+                        failed += 1
+                        logger.warning(f"Zero-byte file detected: {filepath.name}")
 
             if files_checked == 0:
                 return StepResult(
@@ -329,14 +358,21 @@ class Pipeline:
 
             success = failed == 0
             msg = f"Verified {verified}/{files_checked} files"
+            if skipped_no_expected:
+                msg += f" ({skipped_no_expected} without stored checksum, size-only)"
             if failed:
-                msg += f" ({failed} zero-byte files found)"
+                msg += f" ({failed} failed)"
 
             return StepResult(
                 step="verify",
                 success=success,
                 message=msg,
-                details={"verified": verified, "failed": failed, "total": files_checked},
+                details={
+                    "verified": verified,
+                    "failed": failed,
+                    "total": files_checked,
+                    "skipped_no_checksum": skipped_no_expected,
+                },
             )
 
         except Exception as exc:

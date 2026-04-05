@@ -159,14 +159,14 @@ class BatchChecksumVerifier:
 
         return results
 
-    def calculate_batch(self, files: list[Path]) -> dict[Path, str]:
+    def calculate_batch(self, files: list[Path]) -> dict[Path, str | None]:
         """Calculate checksums for multiple files.
 
         Args:
             files: List of file paths
 
         Returns:
-            Dictionary mapping file paths to checksums
+            Dictionary mapping file paths to checksums (``None`` if calculation failed)
         """
         results = {}
 

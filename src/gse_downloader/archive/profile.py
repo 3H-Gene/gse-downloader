@@ -304,7 +304,7 @@ class ArchiveGenerator:
         schema.files = [
             FileInfo(
                 filename=f.filename,
-                type=FileType(f.type) if f.type in [e.value for e in FileType] else FileType.RAW,
+                type=FileType(f.file_type) if f.file_type in [e.value for e in FileType] else FileType.RAW,
                 size_bytes=f.size,
                 download_url=f.url,
             )

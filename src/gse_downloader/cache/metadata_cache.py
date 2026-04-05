@@ -171,4 +171,18 @@ def get_metadata_cache(
     global _default_cache
     if _default_cache is None:
         _default_cache = MetadataCache(cache_dir=cache_dir, ttl_hours=ttl_hours)
+    else:
+        effective_dir = Path(cache_dir) if cache_dir else MetadataCache.DEFAULT_CACHE_DIR
+        if _default_cache.cache_dir.resolve() != effective_dir.resolve():
+            logger.warning(
+                "get_metadata_cache(cache_dir=%r) ignored: singleton already uses %r",
+                cache_dir,
+                _default_cache.cache_dir,
+            )
+        if _default_cache.ttl_hours != ttl_hours:
+            logger.warning(
+                "get_metadata_cache(ttl_hours=%s) ignored: singleton already uses ttl_hours=%s",
+                ttl_hours,
+                _default_cache.ttl_hours,
+            )
     return _default_cache

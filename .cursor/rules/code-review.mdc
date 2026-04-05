@@ -1,0 +1,102 @@
+---
+description: GSE Downloader - Code Review Guidelines
+globs: 
+alwaysApply: true
+---
+
+# GSE Downloader Code Review Guidelines
+
+## Project Overview
+- Python 3.10+ enterprise-grade GEO (Gene Expression Omnibus) data batch download tool
+- Source layout: `src/gse_downloader/` with 10 sub-packages
+- CLI entry: `src/gse_downloader/cli/commands.py` (Typer-based)
+- 136 tests across 9 test files
+- Target: production-ready, shared as WorkBuddy Skill
+
+## Review Scope (Full Audit)
+Review ALL modules in the following order of priority:
+
+### Priority 1 - Core Logic
+1. `core/downloader.py` - HTTP download engine (29KB, largest risk area)
+2. `core/state_manager.py` - Download state tracking and resume
+3. `core/rate_limiter.py` - Rate limiting for NCBI FTP
+4. `core/input_schema.py` - Input validation (Pydantic)
+5. `core/checksum.py` - File integrity verification
+
+### Priority 2 - Data Processing
+6. `parser/geo_query.py` - GEO API query and SOFT parsing (29KB)
+7. `parser/metadata.py` - Metadata extraction from SOFT/XML
+8. `parser/omics_detector.py` - Omics type detection
+9. `formatter/` - Data normalization (base, factory, microarray, rnaseq, series_matrix)
+10. `profiling/profiler.py` - Data profiling and statistics (22KB)
+
+### Priority 3 - Infrastructure
+11. `cli/commands.py` - CLI commands (50KB, largest file)
+12. `pipeline/pipeline.py` - Pipeline orchestration
+13. `cache/metadata_cache.py` - Metadata caching (TTL-based)
+14. `archive/` - Data archive management
+15. `reporter/stats.py` - Statistics reporting
+16. `utils/` - Config, logger, progress display
+
+## Review Criteria
+
+### Architecture & Design
+- [ ] Module responsibilities are clearly separated (SRP)
+- [ ] No circular imports or tight coupling between packages
+- [ ] Public API surface in `__init__.py` is clean and well-organized
+- [ ] Error handling strategy is consistent (custom exceptions vs bare except)
+- [ ] Configuration management is centralized and type-safe
+
+### Code Quality
+- [ ] Type annotations on all public functions and methods
+- [ ] No `Any` type usage where specific types are possible
+- [ ] Docstrings on all public classes and functions (Google-style preferred)
+- [ ] No dead code, unused imports, or commented-out blocks
+- [ ] Consistent naming conventions (PEP 8)
+- [ ] Function/method complexity is manageable (< 50 lines ideal)
+
+### Reliability & Robustness
+- [ ] Network operations have proper timeout and retry logic
+- [ ] File I/O operations handle encoding correctly (UTF-8 for GEO data)
+- [ ] Resource cleanup (context managers, finally blocks) is proper
+- [ ] Edge cases handled: empty datasets, malformed SOFT files, network failures
+- [ ] No mutable default arguments
+- [ ] Thread safety for shared state (state_manager, cache)
+
+### Security
+- [ ] No hardcoded credentials or API keys
+- [ ] File paths are properly sanitized (path traversal prevention)
+- [ ] Input validation for user-provided GSE IDs and file paths
+- [ ] Secure temp file handling
+
+### Performance
+- [ ] No unnecessary synchronous blocking in async contexts
+- [ ] Memory-efficient handling of large files (streaming vs loading entire files)
+- [ ] Appropriate data structures used (dict lookup vs linear scan)
+- [ ] Cache invalidation is correct and timely
+
+### Test Coverage
+- [ ] All public APIs have corresponding tests
+- [ ] Edge cases and error paths are tested
+- [ ] Test fixtures are isolated and reproducible
+- [ ] No flaky tests (time-dependent, network-dependent without mocking)
+- [ ] Tests use meaningful assertions, not just "no exception"
+
+### Platform Compatibility
+- [ ] Windows compatibility (path separators, encoding, line endings)
+- [ ] No Unix-only assumptions in file operations
+- [ ] UTF-8 handling for CJK characters in GEO metadata
+
+## Output Format
+
+For each module reviewed, provide:
+1. **Overall Assessment**: 1-2 sentence summary
+2. **Issues Found**: Numbered list with severity [Critical/High/Medium/Low]
+3. **Specific Suggestions**: Actionable code improvements with file:line references
+4. **Positive Notes**: Things done well
+
+## Standards Reference
+- Python 3.10+ features (match/case, type unions with `|`, etc.)
+- Black (line-length=88), Ruff (E,F,W,I,N,UP,B)
+- MyPy strict mode target
+- pytest + pytest-asyncio for testing
